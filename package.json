@@ -1,0 +1,20 @@
+{
+  "name": "teams-admin-agent",
+  "version": "2.0.0",
+  "description": "Cloudflare Worker: Teams-to-Slack approval workflow for adding members to Microsoft Teams",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create teams-admin-agent",
+    "db:migrate": "wrangler d1 migrations apply teams-admin-agent --local",
+    "db:migrate:prod": "wrangler d1 migrations apply teams-admin-agent --remote"
+  },
+  "dependencies": {
+    "jose": "^6.0.11"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

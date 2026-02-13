@@ -1,0 +1,43 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "{{BOT_ID}}",
+  "developer": {
+    "name": "Teams Admin Agent",
+    "websiteUrl": "https://github.com",
+    "privacyUrl": "https://github.com",
+    "termsOfUseUrl": "https://github.com"
+  },
+  "name": {
+    "short": "admin",
+    "full": "Teams Admin Agent"
+  },
+  "description": {
+    "short": "Request to add members to this team",
+    "full": "Mention @admin with email addresses to request adding new members to this team. Requests are routed to admins for approval via Slack."
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#4A154B",
+  "bots": [
+    {
+      "botId": "{{BOT_ID}}",
+      "scopes": ["team"],
+      "commandLists": [
+        {
+          "scopes": ["team"],
+          "commands": [
+            {
+              "title": "add",
+              "description": "Request to add members — include email addresses in your message"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"]
+}
