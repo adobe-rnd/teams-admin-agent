@@ -10,6 +10,7 @@ import { createRequest } from './db.js';
 import { postApprovalCard } from './slack.js';
 import { getTeamName } from './graph.js';
 
+// JWKS endpoints — Bot Framework (multi-tenant) and Entra ID (single-tenant)
 const BF_JWKS = createRemoteJWKSet(
   new URL('https://login.botframework.com/v1/.well-known/keys'),
 );
@@ -22,14 +23,34 @@ export async function handleTeamsActivity(request, env, ctx) {
   if (!auth.startsWith('Bearer ')) {
     return new Response('Unauthorized', { status: 401 });
   }
-  try {
-    await jwtVerify(auth.slice(7), BF_JWKS, {
-      audience: env.BOT_ID,
-      issuer: 'https://api.botframework.com',
-      clockTolerance: 300,
-    });
-  } catch (err) {
-    console.error('JWT validation failed:', err.message);
+
+  const token = auth.slice(7);
+
+  // Single-tenant bots receive tokens from the tenant's Entra ID endpoint;
+  // multi-tenant bots receive tokens from api.botframework.com.
+  // Try both JWKS sources so either configuration works.
+  const tenantJWKS = createRemoteJWKSet(
+    new URL(`https://login.microsoftonline.com/${env.MS_TENANT_ID}/discovery/v2.0/keys`),
+  );
+
+  let verified = false;
+  for (const { jwks, issuer } of [
+    { jwks: tenantJWKS, issuer: `https://sts.windows.net/${env.MS_TENANT_ID}/` },
+    { jwks: BF_JWKS, issuer: 'https://api.botframework.com' },
+  ]) {
+    try {
+      await jwtVerify(token, jwks, {
+        audience: env.BOT_ID,
+        issuer,
+        clockTolerance: 300,
+      });
+      verified = true;
+      break;
+    } catch { /* try next */ }
+  }
+
+  if (!verified) {
+    console.error('JWT validation failed: no valid issuer/key matched');
     return new Response('Unauthorized', { status: 401 });
   }
 

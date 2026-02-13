@@ -2,9 +2,10 @@ name = "teams-admin-agent"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
+account_id = "852dfa4ae1b0d579df29be65b986c101"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "teams-admin-agent"
-database_id = ""  # paste after running: npm run db:create
+database_id = "08f76bb1-f396-4787-934a-74b6cc8dc3ea"
 migrations_dir = "migrations"
