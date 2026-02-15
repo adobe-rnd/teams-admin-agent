@@ -4,6 +4,11 @@ compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 account_id = "852dfa4ae1b0d579df29be65b986c101"
 
+[vars]
+# Set in dashboard or here so deploy does not remove them
+SLACK_ADMIN_CHANNEL_ID = "C0AESNTFDQE"
+BOT_ID = "407b5910-055e-4acf-b79b-2c17f7834463"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "teams-admin-agent"

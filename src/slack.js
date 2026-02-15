@@ -18,62 +18,81 @@ async function slack(env, method, body) {
     body: JSON.stringify(body),
   });
   const data = await res.json();
-  if (!data.ok) throw new Error(`Slack ${method}: ${data.error}`);
+  if (!data.ok) {
+    const detail = data.response_metadata?.messages?.join('; ') ?? data.response_metadata?.errors?.map((e) => e?.message ?? e).join('; ') ?? '';
+    const msg = detail ? `Slack ${method}: ${data.error} (${detail})` : `Slack ${method}: ${data.error}`;
+    throw new Error(msg);
+  }
   return data;
+}
+
+// ── Card body (reused when replacing only the buttons) ───────────
+
+/** Build Teams deep link to open the team (groupId + tenantId + channel id for path). */
+function teamDeepLink(request, env) {
+  const channelId = request.teams_channel_id;
+  const groupId = request.team_id;
+  const tenantId = env.MS_TENANT_ID;
+  if (!channelId || !groupId || !tenantId) return null;
+  return `https://teams.microsoft.com/l/team/${encodeURIComponent(channelId)}/conversations?groupId=${encodeURIComponent(groupId)}&tenantId=${encodeURIComponent(tenantId)}`;
+}
+
+function cardBodyBlocks(request, env) {
+  const requester = request.requester_email ?? request.requester_name ?? 'Someone';
+  const teamLink = teamDeepLink(request, env);
+  const teamDisplay = teamLink
+    ? `<${teamLink}|${request.team_name}>`
+    : request.team_name;
+  // Blockquote lines (>) render as gray vertical bars in Slack
+  const intro = `${requester} requested to invite one person to Adobe Enterprise Support`;
+  const fields = `> *Email*: ${request.member_email}\n> *Team*: ${teamDisplay}`;
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `${intro}\n\n${fields}`,
+      },
+    },
+    { type: 'divider' },
+  ];
+}
+
+/** Blocks for the card with a "Processing…" line instead of buttons (spinner state). */
+function spinnerBlocks(request, env) {
+  return [
+    ...cardBodyBlocks(request, env),
+    { type: 'section', text: { type: 'mrkdwn', text: ':hourglass_flowing_sand: Processing…' } },
+  ];
 }
 
 // ── Post one approval card per email ────────────────────────────
 
 export async function postApprovalCard(env, request) {
+  const channel = env.SLACK_ADMIN_CHANNEL_ID;
+  if (!channel) {
+    throw new Error('SLACK_ADMIN_CHANNEL_ID is not set. Set it in wrangler.toml [vars] or in the Cloudflare dashboard so it is not removed on deploy.');
+  }
+  const requester = request.requester_email ?? request.requester_name ?? 'Someone';
   const result = await slack(env, 'chat.postMessage', {
-    channel: env.SLACK_ADMIN_CHANNEL_ID,
-    text: `Request #${request.id}: add ${request.member_email} to ${request.team_name} (from ${request.requester_name})`,
+    channel,
+    text: `${requester} requested to invite ${request.member_email} to ${request.team_name}`,
     blocks: [
-      {
-        type: 'header',
-        text: { type: 'plain_text', text: `📋  Request #${request.id}` },
-      },
-      {
-        type: 'section',
-        fields: [
-          { type: 'mrkdwn', text: `*Requested by:*\n${request.requester_name}` },
-          { type: 'mrkdwn', text: `*Date:*\n${request.created_at}` },
-        ],
-      },
-      {
-        type: 'section',
-        fields: [
-          { type: 'mrkdwn', text: `*Microsoft Team:*\n${request.team_name}` },
-          { type: 'mrkdwn', text: `*Email to add:*\n${request.member_email}` },
-        ],
-      },
-      ...(request.original_message
-        ? [{
-            type: 'section',
-            text: { type: 'mrkdwn', text: `*Original message:*\n> ${request.original_message.replace(/\n/g, '\n> ')}` },
-          }]
-        : []),
-      { type: 'divider' },
+      ...cardBodyBlocks(request, env),
       {
         type: 'actions',
         block_id: 'approval_actions',
         elements: [
           {
             type: 'button',
-            text: { type: 'plain_text', text: '✅ Approve' },
+            text: { type: 'plain_text', text: 'Approve' },
             style: 'primary',
             action_id: 'approve_request',
             value: String(request.id),
-            confirm: {
-              title: { type: 'plain_text', text: 'Confirm Approval' },
-              text: { type: 'mrkdwn', text: `Add *${request.member_email}* to *${request.team_name}*?` },
-              confirm: { type: 'plain_text', text: 'Approve' },
-              deny: { type: 'plain_text', text: 'Cancel' },
-            },
           },
           {
             type: 'button',
-            text: { type: 'plain_text', text: '❌ Reject' },
+            text: { type: 'plain_text', text: 'Reject' },
             style: 'danger',
             action_id: 'reject_request',
             value: String(request.id),
@@ -107,9 +126,37 @@ export async function handleSlackInteraction(request, env, ctx) {
 
   const params = new URLSearchParams(rawBody);
   const payload = JSON.parse(params.get('payload'));
+  console.log('Slack interaction:', payload.type, payload.actions?.[0]?.action_id);
 
   if (payload.type === 'block_actions') {
-    // Return 200 immediately; do work in the background
+    const action = payload.actions?.[0];
+    const responseUrl = payload.response_url;
+    if (
+      responseUrl &&
+      (action?.action_id === 'approve_request' || action?.action_id === 'reject_request')
+    ) {
+      const id = parseInt(action.value, 10);
+      const request = await getRequest(env.DB, id);
+      const blocks = request
+        ? spinnerBlocks(request, env)
+        : [{ type: 'section', text: { type: 'mrkdwn', text: ':hourglass_flowing_sand: Processing…' } }];
+      const fallbackText = request
+        ? `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`
+        : 'Processing…';
+      try {
+        await fetch(responseUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            replace_original: true,
+            text: fallbackText,
+            blocks,
+          }),
+        });
+      } catch (e) {
+        console.error('response_url spinner failed:', e);
+      }
+    }
     ctx.waitUntil(handleBlockAction(payload, env));
     return new Response('', { status: 200 });
   }
@@ -137,13 +184,49 @@ async function handleBlockAction(payload, env) {
 
 async function handleApprove(payload, action, env) {
   const id = parseInt(action.value, 10);
+  console.log('Approve started for request', id);
   const request = await getRequest(env.DB, id);
   if (!request || request.status !== 'pending') {
-    await slack(env, 'chat.postEphemeral', {
-      channel: payload.channel.id,
-      user: payload.user.id,
-      text: 'This request has already been processed.',
-    });
+    const statusText = !request
+      ? 'This request could not be found.'
+      : request.status === 'approved'
+        ? 'This request has already been approved.'
+        : 'This request has already been rejected.';
+    console.log('Request already processed:', request?.status ?? 'not_found', '- updating card');
+    const channelId = payload.channel?.id ?? payload.container?.channel_id ?? env.SLACK_ADMIN_CHANNEL_ID;
+    const messageTs = payload.message?.ts ?? payload.container?.message_ts ?? request?.slack_message_ts;
+    if (messageTs) {
+      try {
+        const blocks = request
+          ? [...cardBodyBlocks(request, env), { type: 'section', text: { type: 'mrkdwn', text: statusText } }]
+          : [{ type: 'section', text: { type: 'mrkdwn', text: statusText } }];
+        const fallbackText = request
+          ? `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${statusText}`
+          : statusText;
+        console.log('chat.update (already processed) channel=', channelId, 'ts=', messageTs);
+        const updateRes = await slack(env, 'chat.update', {
+          channel: channelId,
+          ts: messageTs,
+          text: fallbackText,
+          blocks,
+        });
+        console.log('chat.update (already processed) result ok=', updateRes?.ok);
+      } catch (updateErr) {
+        console.error('chat.update (already processed) failed:', updateErr.message, updateErr);
+        await slack(env, 'chat.postEphemeral', {
+          channel: channelId,
+          user: payload.user.id,
+          text: statusText,
+        }).catch(() => {});
+      }
+    } else {
+      console.log('No messageTs in payload, sending ephemeral only');
+      await slack(env, 'chat.postEphemeral', {
+        channel: channelId,
+        user: payload.user.id,
+        text: statusText,
+      }).catch(() => {});
+    }
     return;
   }
 
@@ -151,6 +234,7 @@ async function handleApprove(payload, action, env) {
 
   try {
     await addTeamMember(env, request.team_id, request.member_email);
+    console.log('Add member succeeded for request', id);
 
     const updated = await reviewRequest(env.DB, id, {
       status: 'approved',
@@ -158,36 +242,145 @@ async function handleApprove(payload, action, env) {
       reviewerName,
     });
 
-    await slack(env, 'chat.update', {
-      channel: env.SLACK_ADMIN_CHANNEL_ID,
-      ts: request.slack_message_ts,
-      text: `Request #${id} approved by ${reviewerName}`,
-      blocks: reviewedBlocks(updated, 'approved'),
-    });
+    const approveText = `:white_check_mark: <@${payload.user.id}> approved this request. Invitation sent.`;
+    const channelId = payload.channel?.id ?? env.SLACK_ADMIN_CHANNEL_ID;
+    const messageTs = payload.message?.ts ?? request.slack_message_ts;
+    if (messageTs) {
+      try {
+        await slack(env, 'chat.update', {
+          channel: channelId,
+          ts: messageTs,
+          text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${approveText}`,
+          blocks: [
+            ...cardBodyBlocks(request, env),
+            { type: 'section', text: { type: 'mrkdwn', text: approveText } },
+          ],
+        });
+      } catch (updateErr) {
+        console.error('Slack chat.update failed:', updateErr);
+        await slack(env, 'chat.postEphemeral', {
+          channel: channelId,
+          user: payload.user.id,
+          text: `✅ Member was added to the team, but the card could not be updated: ${updateErr.message}`,
+        }).catch(() => {});
+      }
+    } else {
+      console.error('No message ts for chat.update', { requestId: id });
+      await slack(env, 'chat.postEphemeral', {
+        channel: channelId,
+        user: payload.user.id,
+        text: '✅ Member was added to the team. The approval card could not be updated (missing message reference).',
+      }).catch(() => {});
+    }
 
     // Notify requester in Teams
     if (request.service_url && request.conversation_id) {
-      await replyToTeams(
-        { serviceUrl: request.service_url, conversation: { id: request.conversation_id } },
-        env,
-        `✅ Request #${id} approved — **${request.member_email}** has been added to **${request.team_name}**.`,
-      );
+      try {
+        await replyToTeams(
+          { serviceUrl: request.service_url, conversation: { id: request.conversation_id } },
+          env,
+          `✅ ${request.member_email} has been added to this team.`,
+        );
+      } catch (teamsErr) {
+        console.error('replyToTeams failed:', teamsErr);
+      }
     }
   } catch (err) {
     console.error('Approve failed:', err);
-    await slack(env, 'chat.postEphemeral', {
-      channel: payload.channel.id,
-      user: payload.user.id,
-      text: `Failed to add member: ${err.message}`,
-    });
+    let errorText = `Failed to add member: ${err.message}`;
+    if (err.message?.includes('403')) {
+      errorText += '\n\nWe use the account from *auth/microsoft* — that account must be an *owner* of this team. Re-link with a team owner at /auth/microsoft and update DELEGATED_REFRESH_TOKEN if needed.';
+    }
+    const channelId = payload.channel?.id ?? payload.container?.channel_id ?? env.SLACK_ADMIN_CHANNEL_ID;
+    const messageTs = payload.message?.ts ?? payload.container?.message_ts ?? request.slack_message_ts;
+    if (messageTs) {
+      try {
+        const fallbackText = `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n:warning: ${errorText}`;
+        await slack(env, 'chat.update', {
+          channel: channelId,
+          ts: messageTs,
+          text: fallbackText,
+          blocks: [
+            ...cardBodyBlocks(request, env),
+            { type: 'section', text: { type: 'mrkdwn', text: `:warning: ${errorText}` } },
+          ],
+        });
+      } catch (updateErr) {
+        console.error('chat.update (approve error) failed:', updateErr);
+        await slack(env, 'chat.postEphemeral', {
+          channel: channelId,
+          user: payload.user.id,
+          text: errorText,
+        }).catch(() => {});
+      }
+    } else {
+      await slack(env, 'chat.postEphemeral', {
+        channel: channelId,
+        user: payload.user.id,
+        text: errorText,
+      }).catch(() => {});
+    }
+    if (err.message?.toLowerCase().includes('not found') && request.service_url && request.conversation_id) {
+      try {
+        await replyToTeams(
+          { serviceUrl: request.service_url, conversation: { id: request.conversation_id } },
+          env,
+          `The following user was not found: ${request.member_email}`,
+        );
+      } catch (teamsErr) {
+        console.error('replyToTeams (not found) failed:', teamsErr);
+      }
+    }
   }
 }
 
 async function openRejectModal(payload, action, env) {
   const id = parseInt(action.value, 10);
   const request = await getRequest(env.DB, id);
-  if (!request || request.status !== 'pending') return;
+  if (!request || request.status !== 'pending') {
+    const statusText = !request
+      ? 'This request could not be found.'
+      : request.status === 'approved'
+        ? 'This request has already been approved.'
+        : 'This request has already been rejected.';
+    console.log('Reject: request already processed:', request?.status ?? 'not_found', '- updating card');
+    const channelId = payload.channel?.id ?? payload.container?.channel_id ?? env.SLACK_ADMIN_CHANNEL_ID;
+    const messageTs = payload.message?.ts ?? payload.container?.message_ts ?? request?.slack_message_ts;
+    if (messageTs) {
+      try {
+        const blocks = request
+          ? [...cardBodyBlocks(request, env), { type: 'section', text: { type: 'mrkdwn', text: statusText } }]
+          : [{ type: 'section', text: { type: 'mrkdwn', text: statusText } }];
+        const fallbackText = request
+          ? `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${statusText}`
+          : statusText;
+        console.log('chat.update (reject already processed) channel=%s ts=%s', channelId, messageTs);
+        await slack(env, 'chat.update', {
+          channel: channelId,
+          ts: messageTs,
+          text: fallbackText,
+          blocks,
+        });
+      } catch (updateErr) {
+        console.error('chat.update (reject already processed) failed:', updateErr.message);
+        await slack(env, 'chat.postEphemeral', {
+          channel: channelId,
+          user: payload.user.id,
+          text: statusText,
+        }).catch(() => {});
+      }
+    } else {
+      await slack(env, 'chat.postEphemeral', {
+        channel: channelId,
+        user: payload.user.id,
+        text: statusText,
+      }).catch(() => {});
+    }
+    return;
+  }
 
+  const channelId = payload.channel?.id ?? payload.container?.channel_id ?? env.SLACK_ADMIN_CHANNEL_ID;
+  const messageTs = payload.message?.ts ?? payload.container?.message_ts ?? request.slack_message_ts;
   await slack(env, 'views.open', {
     trigger_id: payload.trigger_id,
     view: {
@@ -197,6 +390,8 @@ async function openRejectModal(payload, action, env) {
         requestId: id,
         reviewerId: payload.user.id,
         reviewerName: payload.user.name ?? payload.user.username ?? payload.user.id,
+        channelId,
+        messageTs,
       }),
       title: { type: 'plain_text', text: 'Reject Request' },
       submit: { type: 'plain_text', text: 'Reject' },
@@ -204,13 +399,16 @@ async function openRejectModal(payload, action, env) {
       blocks: [
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `Rejecting request *#${id}* — add *${request.member_email}* to *${request.team_name}*.` },
+          text: {
+            type: 'mrkdwn',
+            text: `Rejecting request to add ${request.member_email} to ${request.team_name}.`,
+          },
         },
         {
           type: 'input',
           block_id: 'reject_reason',
           optional: true,
-          label: { type: 'plain_text', text: 'Reason' },
+          label: { type: 'plain_text', text: 'Reason (optional)' },
           element: {
             type: 'plain_text_input',
             action_id: 'reason',
@@ -226,54 +424,58 @@ async function openRejectModal(payload, action, env) {
 // ── Reject modal submission ─────────────────────────────────────
 
 async function handleRejectSubmission(payload, env) {
-  const { requestId, reviewerId, reviewerName } = JSON.parse(payload.view.private_metadata);
+  const meta = JSON.parse(payload.view.private_metadata);
+  const { requestId, reviewerId, reviewerName, channelId, messageTs } = meta;
   const reviewNote = payload.view.state.values.reject_reason?.reason?.value ?? null;
 
   const request = await getRequest(env.DB, requestId);
   if (!request || request.status !== 'pending') return;
 
+  const channel = channelId ?? env.SLACK_ADMIN_CHANNEL_ID;
+  const ts = messageTs ?? request.slack_message_ts;
+
   try {
-    const updated = await reviewRequest(env.DB, requestId, {
+    if (ts) {
+      try {
+        await slack(env, 'chat.update', {
+          channel,
+          ts,
+          text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`,
+          blocks: spinnerBlocks(request, env),
+        });
+      } catch (e) {
+        console.error('Reject spinner update failed:', e);
+      }
+    }
+
+    await reviewRequest(env.DB, requestId, {
       status: 'rejected', reviewerId, reviewerName, reviewNote,
     });
 
+    const reason = reviewNote || '—';
+    const rejectText = `:no_entry_sign: <@${reviewerId}> rejected this request. Reason: ${reason}`;
+    const requester = request.requester_email ?? request.requester_name ?? 'Someone';
     await slack(env, 'chat.update', {
-      channel: env.SLACK_ADMIN_CHANNEL_ID,
-      ts: request.slack_message_ts,
-      text: `Request #${requestId} rejected by ${reviewerName}`,
-      blocks: reviewedBlocks(updated, 'rejected'),
+      channel,
+      ts,
+      text: `${requester} requested to invite ${request.member_email} to ${request.team_name}\n${rejectText}`,
+      blocks: [
+        ...cardBodyBlocks(request, env),
+        { type: 'section', text: { type: 'mrkdwn', text: rejectText } },
+      ],
     });
 
     if (request.service_url && request.conversation_id) {
-      const note = reviewNote ? `\n> ${reviewNote}` : '';
+      const reason = reviewNote || '—';
       await replyToTeams(
         { serviceUrl: request.service_url, conversation: { id: request.conversation_id } },
         env,
-        `🚫 Request #${requestId} rejected — **${request.member_email}** was *not* added to **${request.team_name}**.${note}`,
+        `🚫 ${request.member_email} was not added to this team.\n\nReason: ${reason}`,
       );
     }
   } catch (err) {
     console.error('Reject failed:', err);
   }
-}
-
-// ── Card after review ───────────────────────────────────────────
-
-function reviewedBlocks(req, outcome) {
-  const ok = outcome === 'approved';
-  return [
-    { type: 'header', text: { type: 'plain_text', text: `${ok ? '✅' : '🚫'}  Request #${req.id} — ${ok ? 'Approved' : 'Rejected'}` } },
-    { type: 'section', fields: [
-      { type: 'mrkdwn', text: `*Requested by:*\n${req.requester_name}` },
-      { type: 'mrkdwn', text: `*Reviewed by:*\n${req.reviewer_name}` },
-    ]},
-    { type: 'section', fields: [
-      { type: 'mrkdwn', text: `*Team:*\n${req.team_name}` },
-      { type: 'mrkdwn', text: `*Member:*\n${req.member_email}` },
-    ]},
-    ...(req.review_note ? [{ type: 'section', text: { type: 'mrkdwn', text: `*Note:*\n${req.review_note}` } }] : []),
-    { type: 'context', elements: [{ type: 'mrkdwn', text: `${ok ? 'Approved' : 'Rejected'} on ${req.reviewed_at}` }] },
-  ];
 }
 
 // ── Slack signature verification ────────────────────────────────

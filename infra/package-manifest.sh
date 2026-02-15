@@ -41,9 +41,18 @@ sed "s/{{BOT_ID}}/$BOT_ID/g" "$SCRIPT_DIR/manifest.json" \
 
 echo "==> manifest.json written"
 
-# ── 2. Generate placeholder icons ────────────────────────────────
+# ── 2. Icons: use custom admin bot icons or generate placeholders ───
 
-python3 -c "
+ICONS_DIR="$SCRIPT_DIR/icons"
+COLOR_SRC="$ICONS_DIR/color.png"
+OUTLINE_SRC="$ICONS_DIR/outline.png"
+
+if [[ -f "$COLOR_SRC" && -f "$OUTLINE_SRC" ]]; then
+  cp "$COLOR_SRC" "$OUT_DIR/manifest/color.png"
+  cp "$OUTLINE_SRC" "$OUT_DIR/manifest/outline.png"
+  echo "==> icons copied from $ICONS_DIR (color 192×192, outline 32×32)"
+else
+  python3 -c "
 import struct, zlib, sys
 
 def png(w, h, r, g, b, path):
@@ -65,8 +74,8 @@ def png(w, h, r, g, b, path):
 png(192, 192, 74, 21, 75, sys.argv[1])   # color.png  — purple (#4A154B)
 png(32,  32,  74, 21, 75, sys.argv[2])   # outline.png — same color
 " "$OUT_DIR/manifest/color.png" "$OUT_DIR/manifest/outline.png"
-
-echo "==> icons generated (placeholder — replace with real icons if desired)"
+  echo "==> placeholder icons generated (add infra/icons/color.png and outline.png for admin bot icon)"
+fi
 
 # ── 3. Zip ────────────────────────────────────────────────────────
 

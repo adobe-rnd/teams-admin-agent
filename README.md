@@ -12,7 +12,7 @@ There are two independent flows — the **request flow** (Teams → Worker → S
  User in Teams                Azure Bot Service             Cloudflare Worker               Slack API
  ────────────                 ─────────────────             ─────────────────               ─────────
       │                              │                              │                          │
-      │  "@admin add alice@co.com    │                              │                          │
+      │  "@admin-bot add alice@co.com    │                              │                          │
       │   and bob@co.com"            │                              │                          │
       │                              │                              │                          │
       │  ── user sends message ──▸   │                              │                          │
@@ -263,7 +263,7 @@ After running `setup.sh`, package the Teams app manifest:
 
 This generates `dist/teams-admin-agent.zip` containing `manifest.json` (with your BOT_ID substituted) and placeholder icons. Upload it via **Teams Admin Center → Manage apps → Upload** or sideload in **Teams → Apps → Manage your apps → Upload a custom app**.
 
-The manifest sets the bot's short name to `admin`, so users will @mention it as `@admin` in Teams channels.
+The manifest sets the bot's short name to `admin-bot`, so users will @mention it as `@admin-bot` in Teams channels.
 
 To use custom icons, replace `dist/manifest/color.png` (192×192) and `dist/manifest/outline.png` (32×32) before zipping, or replace the placeholder PNGs and re-run the script.
 
@@ -304,6 +304,22 @@ wrangler secret put MS_CLIENT_SECRET
 # Deploy
 npm run deploy
 ```
+
+#### Adding guest users to teams
+
+Microsoft Graph does not allow **app-only** (client credentials) to add **guest** users to a team. To add guests, a **team owner** (or admin) must link their account once so the Worker can use **delegated** permissions for add-member calls:
+
+1. In **Azure Portal** → your app registration → **Authentication** → add a **Redirect URI** (Web):  
+   `https://<your-worker>.workers.dev/auth/microsoft/callback`  
+   Under **API permissions**, ensure **Delegated** permissions include `TeamMember.ReadWrite.All` and `User.Read` (Add permission → Microsoft Graph → Delegated).
+2. Open in a browser: `https://<your-worker>.workers.dev/auth/microsoft`
+3. Sign in with an account that is **owner** (or team admin) of the teams you want to add guests to.
+4. On the success page, copy the **refresh token** and run:  
+   `wrangler secret put DELEGATED_REFRESH_TOKEN`  
+   Paste the token when prompted.
+5. Redeploy (or the next approve will use the new secret).
+
+After that, when an approve would return 403 (guest), the Worker retries the add using the delegated token and guests can be added.
 
 ### Local Development
 
@@ -846,7 +862,7 @@ Every arrow between components is authenticated. There is no unauthenticated pat
 | File | Purpose |
 |---|---|
 | `src/index.js` | Worker entry — routes `/api/messages` and `/api/slack/interactions` |
-| `src/teams.js` | Validates Bot Framework JWT, parses @admin messages, replies in Teams |
+| `src/teams.js` | Validates Bot Framework JWT, parses @admin-bot messages, replies in Teams |
 | `src/slack.js` | Posts approval cards, handles Approve/Reject buttons and modals |
 | `src/graph.js` | Graph API via fetch — token acquisition, resolve users, add members |
 | `src/parser.js` | Extracts email addresses from natural-language messages |
@@ -861,7 +877,7 @@ Every arrow between components is authenticated. There is no unauthenticated pat
 
 In a Teams channel:
 
-> **@admin** please add alice@company.com, bob@company.com, and carol@company.com
+> **@admin-bot** please add alice@company.com, bob@company.com, and carol@company.com
 
 Bot replies:
 

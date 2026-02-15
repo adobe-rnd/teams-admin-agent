@@ -4,17 +4,17 @@
  */
 
 export async function createRequest(db, {
-  requesterName, requesterAadId, teamId, teamName,
+  requesterName, requesterAadId, requesterEmail, teamId, teamName, teamsChannelId,
   memberEmail, originalMessage, conversationId, serviceUrl,
 }) {
   const { meta } = await db
     .prepare(
       `INSERT INTO requests
-        (requester_name, requester_aad_id, team_id, team_name,
+        (requester_name, requester_aad_id, requester_email, team_id, team_name, teams_channel_id,
          member_email, original_message, conversation_id, service_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(requesterName, requesterAadId, teamId, teamName,
+    .bind(requesterName, requesterAadId, requesterEmail ?? null, teamId, teamName, teamsChannelId ?? null,
           memberEmail, originalMessage ?? null,
           conversationId ?? null, serviceUrl ?? null)
     .run();

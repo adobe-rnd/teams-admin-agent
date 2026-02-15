@@ -5,17 +5,17 @@
   "id": "{{BOT_ID}}",
   "developer": {
     "name": "Teams Admin Agent",
-    "websiteUrl": "https://github.com",
-    "privacyUrl": "https://github.com",
-    "termsOfUseUrl": "https://github.com"
+    "websiteUrl": "https://github.com/rofe/teams-admin-agent/#readme",
+    "privacyUrl": "https://www.adobe.com/privacy/policy.html",
+    "termsOfUseUrl": "https://www.adobe.com/legal/terms.html"
   },
   "name": {
-    "short": "admin",
+    "short": "admin-bot",
     "full": "Teams Admin Agent"
   },
   "description": {
     "short": "Request to add members to this team",
-    "full": "Mention @admin with email addresses to request adding new members to this team. Requests are routed to admins for approval via Slack."
+    "full": "Mention @admin-bot with email addresses to request adding new members to this team. Requests are routed to admins for approval via Slack."
   },
   "icons": {
     "outline": "outline.png",
