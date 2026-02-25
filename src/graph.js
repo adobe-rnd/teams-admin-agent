@@ -49,6 +49,14 @@ async function graphApiWithToken(accessToken, path, method = 'GET', body = null)
         '403 Forbidden — the account from /auth/microsoft must be an owner of this team. If the invitee is a guest, your tenant may block adding guests via Graph; add them manually in Teams if needed.',
       );
     }
+    if (res.status === 403 && path.includes('/invitations')) {
+      const lower = resText.toLowerCase();
+      if (lower.includes('guest invitations not allowed') || lower.includes('not allowed for your company')) {
+        throw new Error(
+          'Guest invitations are disabled by your organization. A Microsoft 365 admin must enable B2B guest invitations in **Microsoft Entra ID** → External ID → External collaboration settings.',
+        );
+      }
+    }
     throw new Error(`Graph ${method} ${path} (${res.status}): ${resText}`);
   }
   if (res.status === 204) return null;
@@ -135,8 +143,43 @@ export async function resolveUser(env, email) {
   return user;
 }
 
+/**
+ * Send a B2B invitation to an external email. Requires delegated token with User.Invite.All.
+ * Redirect URL sends the user to Teams after they accept.
+ */
+export async function sendInvitation(env, email) {
+  const token = await getDelegatedToken(env);
+  if (!token) {
+    throw new Error(
+      'DELEGATED_REFRESH_TOKEN is required to send invitations. Visit GET /auth/microsoft, sign in, then set the refresh token.',
+    );
+  }
+  await graphApiWithToken(
+    token,
+    '/invitations',
+    'POST',
+    {
+      invitedUserEmailAddress: email,
+      inviteRedirectUrl: 'https://teams.microsoft.com',
+      sendInvitationMessage: true,
+    },
+  );
+}
+
+/**
+ * Add the user to the team, or if they are not in the tenant, send them a B2B invitation.
+ * Returns { user } when added to team, or { invited: true, email } when an invite was sent.
+ */
 export async function addTeamMember(env, teamId, email) {
-  const user = await resolveUser(env, email);
+  let user;
+  try {
+    user = await resolveUser(env, email);
+  } catch (err) {
+    if (!err.message?.includes('User not found')) throw err;
+    await sendInvitation(env, email);
+    return { invited: true, email };
+  }
+
   const delegatedToken = await getDelegatedToken(env);
   if (!delegatedToken) {
     throw new Error(
@@ -149,5 +192,5 @@ export async function addTeamMember(env, teamId, email) {
     'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${user.id}')`,
   };
   await graphApiWithToken(delegatedToken, `/teams/${teamId}/members`, 'POST', body);
-  return user;
+  return { user };
 }

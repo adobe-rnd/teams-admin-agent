@@ -3,7 +3,7 @@
  * A team owner signs in; we get a refresh token and store it as DELEGATED_REFRESH_TOKEN.
  */
 
-const DELEGATED_SCOPES = 'offline_access https://graph.microsoft.com/TeamMember.ReadWrite.All https://graph.microsoft.com/User.Read';
+const DELEGATED_SCOPES = 'offline_access https://graph.microsoft.com/TeamMember.ReadWrite.All https://graph.microsoft.com/User.Read https://graph.microsoft.com/User.Invite.All';
 
 export function handleAuthMicrosoft(request, env) {
   const origin = new URL(request.url).origin;

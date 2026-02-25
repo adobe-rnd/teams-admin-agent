@@ -67,6 +67,11 @@ export async function handleTeamsActivity(request, env, ctx) {
 
 // ── Process an @admin-bot message ──────────────────────────────────
 
+function looksLikeThreadId(s) {
+  if (!s || typeof s !== 'string') return false;
+  return s.includes('@thread') || (s.includes(':') && s.length > 36);
+}
+
 /** Fetch team display name and AAD group ID from Bot Framework Connector. */
 async function getTeamDetailsFromConnector(activity, env, teamsTeamId) {
   const base = (activity.serviceUrl ?? '').replace(/\/+$/, '');
@@ -77,10 +82,14 @@ async function getTeamDetailsFromConnector(activity, env, teamsTeamId) {
       method: 'GET',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error('Connector GET /v3/teams failed:', res.status, await res.text());
+      return null;
+    }
     const data = await res.json();
     return { name: data.name ?? null, aadGroupId: data.aadGroupId ?? null };
-  } catch {
+  } catch (err) {
+    console.error('getTeamDetailsFromConnector error:', err.message);
     return null;
   }
 }
@@ -102,9 +111,17 @@ async function processMessage(activity, env) {
     const details = await getTeamDetailsFromConnector(activity, env, teamsTeamId);
     if (details?.name) teamName = details.name;
     if (details?.aadGroupId) teamId = details.aadGroupId;
-    if (!teamName || teamName === teamId) {
-      try { teamName = await getTeamName(env, teamId); } catch { teamName = teamId; }
-      if (!teamName || teamName === teamId) teamName = teamId;
+    const isGraphGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(teamId);
+    if (isGraphGuid && (!teamName || teamName === teamId)) {
+      try { teamName = await getTeamName(env, teamId); } catch { teamName = null; }
+    }
+    if (!teamName || teamName === teamId || looksLikeThreadId(teamName)) {
+      teamName = 'This team';
+    }
+
+    if (!isGraphGuid) {
+      await replyToTeams(activity, env, "This team couldn't be resolved (missing Graph ID). The bot may need to be re-added to the team, or check the Connector endpoint.");
+      return;
     }
 
     const requesterName = activity.from?.name ?? 'Unknown';
