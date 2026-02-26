@@ -297,26 +297,39 @@ async function handleApprove(payload, action, env) {
     }
   } catch (err) {
     console.error('Approve failed:', err);
-    let errorText = `Failed to add member: ${err.message}`;
-    if (err.message?.includes('403') && !err.message?.toLowerCase().includes('guest invitations')) {
-      errorText += '\n\nWe use the account from *auth/microsoft* — that account must be an *owner* of this team. Re-link with a team owner at /auth/microsoft and update DELEGATED_REFRESH_TOKEN if needed.';
-    }
     const channelId = payload.channel?.id ?? payload.container?.channel_id ?? env.SLACK_ADMIN_CHANNEL_ID;
     const messageTs = payload.message?.ts ?? payload.container?.message_ts ?? request.slack_message_ts;
+    const errorCardText = ':warning: An error occurred…';
     if (messageTs) {
       try {
-        const fallbackText = `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n:warning: ${errorText}`;
+        const fallbackText = `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${errorCardText}`;
         await slack(env, 'chat.update', {
           channel: channelId,
           ts: messageTs,
           text: fallbackText,
           blocks: [
             ...cardBodyBlocks(request, env),
-            { type: 'section', text: { type: 'mrkdwn', text: `:warning: ${errorText}` } },
+            { type: 'section', text: { type: 'mrkdwn', text: errorCardText } },
+          ],
+        });
+        const errorSnippet = String(err.message ?? err).slice(0, 2900);
+        await slack(env, 'chat.postMessage', {
+          channel: channelId,
+          thread_ts: messageTs,
+          text: 'Error response',
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: '```\n' + errorSnippet.replace(/```/g, '`\u200b``') + '\n```',
+              },
+            },
           ],
         });
       } catch (updateErr) {
         console.error('chat.update (approve error) failed:', updateErr);
+        const errorText = `Failed to add member: ${err.message}`;
         await slack(env, 'chat.postEphemeral', {
           channel: channelId,
           user: payload.user.id,
@@ -327,7 +340,7 @@ async function handleApprove(payload, action, env) {
       await slack(env, 'chat.postEphemeral', {
         channel: channelId,
         user: payload.user.id,
-        text: errorText,
+        text: `Failed to add member: ${err.message}`,
       }).catch(() => {});
     }
     if (err.message?.toLowerCase().includes('not found') && request.service_url && request.conversation_id) {
