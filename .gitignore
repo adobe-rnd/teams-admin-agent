@@ -6,3 +6,5 @@ node_modules/
 dist/
 infra/.azure-env
 infra/.secrets
+
+.DS_Store
