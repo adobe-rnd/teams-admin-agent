@@ -8,48 +8,20 @@ There are two independent flows — the **request flow** (Teams → Worker → S
 
 ### Flow 1: Submitting a request (Teams → Slack)
 
-```
- User in Teams                Azure Bot Service             Cloudflare Worker               Slack API
- ────────────                 ─────────────────             ─────────────────               ─────────
-      │                              │                              │                          │
-      │  "@admin-bot add alice@co.com    │                              │                          │
-      │   and bob@co.com"            │                              │                          │
-      │                              │                              │                          │
-      │  ── user sends message ──▸   │                              │                          │
-      │                              │                              │                          │
-      │     Teams detects the bot    │                              │                          │
-      │     was @mentioned and       │                              │                          │
-      │     forwards the message     │                              │                          │
-      │                              │                              │                          │
-      │                              │  ── POST /api/messages ──▸   │                          │
-      │                              │     (JSON activity +         │                          │
-      │                              │      Bearer JWT token)       │                          │
-      │                              │                              │                          │
-      │                              │                              │  1. Validate JWT against │
-      │                              │                              │     Bot Framework JWKS   │
-      │                              │                              │                          │
-      │                              │                              │  2. Extract emails from  │
-      │                              │                              │     message text via     │
-      │                              │                              │     regex parser         │
-      │                              │                              │                          │
-      │                              │                              │  3. Look up team name    │
-      │                              │                              │     via Graph API        │
-      │                              │                              │                          │
-      │                              │                              │  4. For EACH email:      │
-      │                              │                              │     a. Save request      │
-      │                              │                              │        in D1 database    │
-      │                              │                              │                          │
-      │                              │                              │     b. POST chat.post    │
-      │                              │                              │        Message ─────────▸│
-      │                              │                              │        (approval card    │
-      │                              │                              │         with Approve /   │
-      │                              │                              │         Reject buttons)  │
-      │                              │                              │                          │
-      │                              │                              │  5. Reply to requester   │
-      │                              │  ◂── POST /v3/conversations/ │     via Bot REST API     │
-      │  ◂── bot reply ───────────   │      activities               │                          │
-      │     "2 requests submitted"   │     (Bearer token)           │                          │
-      │                              │                              │                          │
+```mermaid
+sequenceDiagram
+    participant User as User in Teams
+    participant Bot as Azure Bot Service
+    participant Worker as Cloudflare Worker
+    participant Slack as Slack API
+
+    User->>Bot: "@admin-bot add alice@co.com and bob@co.com"
+    Note over User,Bot: Teams detects @mention, forwards message
+    Bot->>Worker: POST /api/messages (JSON activity + Bearer JWT)
+    Note over Worker: 1. Validate JWT against Bot Framework JWKS<br/>2. Extract emails via regex<br/>3. Look up team via Graph API<br/>4. For each email: save in D1, POST approval card to Slack<br/>5. Reply to requester via Bot REST API
+    Worker->>Slack: chat.postMessage (approval cards with Approve/Reject)
+    Worker->>Bot: POST /v3/conversations/activities
+    Bot->>User: "2 requests submitted"
 ```
 
 **How does Teams reach the Worker?** When you register an [Azure Bot](https://portal.azure.com/#create/Microsoft.AzureBot), you set a **messaging endpoint** URL — you point this at `https://<your-worker>.workers.dev/api/messages`. From then on, any time a user @mentions the bot in Teams, Azure Bot Service delivers the message as an HTTP POST to that URL. The Worker never polls — it just receives webhooks.
@@ -58,149 +30,55 @@ There are two independent flows — the **request flow** (Teams → Worker → S
 
 ### Flow 2: Approving a request (Slack → Teams)
 
-```
- Admin in Slack               Slack Platform               Cloudflare Worker           Microsoft Graph
- ──────────────               ──────────────               ─────────────────           ───────────────
-      │                              │                              │                        │
-      │  clicks [✅ Approve]         │                              │                        │
-      │                              │                              │                        │
-      │  ── button click ──────▸     │                              │                        │
-      │                              │                              │                        │
-      │     Slack sends the          │                              │                        │
-      │     interaction payload      │                              │                        │
-      │     to the configured        │                              │                        │
-      │     Request URL              │                              │                        │
-      │                              │                              │                        │
-      │                              │  ── POST /api/slack/ ──────▸ │                        │
-      │                              │     interactions             │                        │
-      │                              │     (x-slack-signature +     │                        │
-      │                              │      form-encoded payload)   │                        │
-      │                              │                              │                        │
-      │                              │                              │  1. Verify HMAC-SHA256 │
-      │                              │                              │     signature           │
-      │                              │                              │                        │
-      │                              │                              │  2. Look up request    │
-      │                              │                              │     in D1 database     │
-      │                              │                              │                        │
-      │                              │                              │  3. Add member via     │
-      │                              │                              │     Graph API ────────▸│
-      │                              │                              │     POST /teams/{id}/  │
-      │                              │                              │       members          │
-      │                              │                              │                        │
-      │                              │                              │  4. Update request     │
-      │                              │                              │     status in D1       │
-      │                              │                              │                        │
-      │                              │                              │  5. Update Slack card  │
-      │                              │  ◂── chat.update ─────────── │     (replace buttons   │
-      │  card now shows              │                              │      with ✅ Approved)  │
-      │  "✅ Approved"               │                              │                        │
-      │                              │                              │  6. Notify requester   │
-      │                              │                              │     in Teams via Bot   │
-      │                              │                              │     REST API           │
-      │                              │                              │                        │
-                                                                           │
-                                                              ┌────────────┘
-                                                              │
-                                                              ▼
-                                                    Azure Bot Service          User in Teams
-                                                    ─────────────────          ──────────────
-                                                              │                      │
-                                                              │  ── POST /v3/ ──▸    │
-                                                              │     conversations/    │
-                                                              │     activities        │
-                                                              │                      │
-                                                              │     "✅ alice@co.com  │
-                                                              │      has been added   │
-                                                              │      to Engineering"  │
-                                                              │                      │
+```mermaid
+sequenceDiagram
+    participant Admin as Admin in Slack
+    participant Slack as Slack Platform
+    participant Worker as Cloudflare Worker
+    participant Graph as Microsoft Graph
+    participant Bot as Azure Bot Service
+    participant User as User in Teams
+
+    Admin->>Slack: clicks [Approve]
+    Slack->>Worker: POST /api/slack/interactions (x-slack-signature + form-encoded payload)
+    Note over Worker: 1. Verify HMAC-SHA256 signature<br/>2. Look up request in D1<br/>3. Add member (or invite+add if guest) via Graph<br/>4. Update request status in D1<br/>5. Update Slack card (replace buttons with Approved)<br/>6. Notify requester in Teams via Bot REST API
+    Worker->>Graph: POST /teams/{id}/members (or POST /invitations then add)
+    Worker->>Slack: chat.update (card shows Approved)
+    Worker->>Bot: POST /v3/conversations/activities
+    Bot->>User: "alice@co.com has been added to Engineering"
 ```
 
 ### Flow 3: Rejecting a request (Slack → modal → Teams)
 
 Rejection is a two-step interaction: the button click opens a modal for an optional reason, then the modal submission completes the rejection.
 
-```
- Admin in Slack               Slack Platform               Cloudflare Worker          Azure Bot Service
- ──────────────               ──────────────               ─────────────────          ─────────────────
-      │                              │                              │                        │
-      │  clicks [❌ Reject]          │                              │                        │
-      │                              │                              │                        │
-      │  ── button click ──────▸     │                              │                        │
-      │                              │                              │                        │
-      │                              │  ── POST /api/slack/ ──────▸ │                        │
-      │                              │     interactions             │                        │
-      │                              │     { type: block_actions,   │                        │
-      │                              │       action: reject_request,│                        │
-      │                              │       trigger_id: "..." }    │                        │
-      │                              │                              │                        │
-      │                              │                              │  1. Verify signature   │
-      │                              │                              │                        │
-      │                              │                              │  2. Look up request    │
-      │                              │                              │     in D1 — confirm    │
-      │                              │                              │     still pending      │
-      │                              │                              │                        │
-      │                              │                              │  3. Call views.open    │
-      │                              │  ◂── views.open ──────────── │     with trigger_id    │
-      │                              │     (modal JSON with         │     to show reason     │
-      │                              │      reason input field)     │     modal              │
-      │                              │                              │                        │
-      │  ◂── modal appears ──────   │                              │                        │
-      │                              │                              │                        │
-      │  ┌────────────────────┐      │                              │                        │
-      │  │ Reject Request     │      │                              │                        │
-      │  │                    │      │                              │                        │
-      │  │ Reason:            │      │                              │                        │
-      │  │ ┌────────────────┐ │      │                              │                        │
-      │  │ │ "Not part of   │ │      │                              │                        │
-      │  │ │  this project" │ │      │                              │                        │
-      │  │ └────────────────┘ │      │                              │                        │
-      │  │                    │      │                              │                        │
-      │  │  [Cancel] [Reject] │      │                              │                        │
-      │  └────────────────────┘      │                              │                        │
-      │                              │                              │                        │
-      │  clicks [Reject]             │                              │                        │
-      │                              │                              │                        │
-      │  ── modal submit ─────▸      │                              │                        │
-      │                              │                              │                        │
-      │                              │  ── POST /api/slack/ ──────▸ │                        │
-      │                              │     interactions             │                        │
-      │                              │     { type: view_submission, │                        │
-      │                              │       callback_id:           │                        │
-      │                              │         reject_reason_modal, │                        │
-      │                              │       values: { reason } }   │                        │
-      │                              │                              │                        │
-      │                              │                              │  4. Verify signature   │
-      │                              │                              │                        │
-      │                              │                              │  5. Update request     │
-      │                              │                              │     status → rejected  │
-      │                              │                              │     in D1, save reason │
-      │                              │                              │                        │
-      │                              │                              │  6. Update Slack card  │
-      │                              │  ◂── chat.update ─────────── │     (replace buttons   │
-      │  card now shows              │                              │      with 🚫 Rejected  │
-      │  "🚫 Rejected"              │                              │      + reason)         │
-      │                              │                              │                        │
-      │                              │                              │  7. Notify requester   │
-      │                              │                              │     in Teams via Bot   │
-      │                              │                              │     REST API ─────────▸│
-      │                              │                              │                        │
-      │                              │                              │        │               │
-      │                              │                              │        ▼               │
-      │                              │                              │  User in Teams sees:   │
-      │                              │                              │  "🚫 Request #1        │
-      │                              │                              │   rejected — alice@    │
-      │                              │                              │   co.com was not added │
-      │                              │                              │   to Engineering.      │
-      │                              │                              │   > Not part of this   │
-      │                              │                              │     project"           │
-      │                              │                              │                        │
+```mermaid
+sequenceDiagram
+    participant Admin as Admin in Slack
+    participant Slack as Slack Platform
+    participant Worker as Cloudflare Worker
+    participant Bot as Azure Bot Service
+    participant User as User in Teams
+
+    Admin->>Slack: clicks [Reject]
+    Slack->>Worker: POST /api/slack/interactions (block_actions, reject_request, trigger_id)
+    Note over Worker: 1. Verify signature<br/>2. Look up request in D1, confirm still pending<br/>3. Call views.open with trigger_id (modal with reason field)
+    Worker->>Slack: views.open (Reject Request modal)
+    Slack->>Admin: modal appears (Reason: "Not part of this project", [Cancel] [Reject])
+
+    Admin->>Slack: clicks [Reject] in modal
+    Slack->>Worker: POST /api/slack/interactions (view_submission, reject_reason_modal, values.reason)
+    Note over Worker: 4. Verify signature<br/>5. Update request status → rejected in D1, save reason<br/>6. Update Slack card (replace buttons with Rejected + reason)<br/>7. Notify requester in Teams via Bot REST API
+    Worker->>Slack: chat.update (card shows Rejected)
+    Worker->>Bot: POST /v3/conversations/activities
+    Bot->>User: "Request #1 rejected — alice@co.com was not added to Engineering. > Not part of this project"
 ```
 
 **Why two round-trips for reject?** The first interaction (button click) carries a `trigger_id` — a short-lived token that Slack requires to open a modal. The Worker uses it to call `views.open`, which pops the reason form on the admin's screen. When the admin submits the modal, Slack sends a second POST (`view_submission`) to the same Worker endpoint. Only then does the Worker update D1, rewrite the Slack card, and notify Teams. If the admin clicks Cancel, nothing happens — the request stays pending.
 
 **How does Slack reach the Worker?** When you configure [Interactivity](https://api.slack.com/interactivity) in your Slack app, you set a **Request URL** — you point this at `https://<your-worker>.workers.dev/api/slack/interactions`. Every button click and modal submission is delivered as an HTTP POST to that URL. Both Flow 2 and Flow 3 use this same endpoint.
 
-**How does the Worker add the member?** It calls the [Microsoft Graph API](https://learn.microsoft.com/en-us/graph/api/team-post-members) (`POST /teams/{team-id}/members`) using an app-only access token obtained via the standard OAuth2 client-credentials flow. This only happens on approval — rejection skips this step entirely.
+**How does the Worker add the member?** For users already in the tenant, it calls the [Microsoft Graph API](https://learn.microsoft.com/en-us/graph/api/team-post-members) (`POST /teams/{team-id}/members`) using a delegated token (or app-only where allowed). For users not yet in the tenant (guests), it sends a B2B invitation (`POST /invitations`), gets `invitedUser.id` from the response, then adds that user to the team in the same step — so once they accept the invite, they already have access (no second “add to team” action). This only happens on approval; rejection skips this step entirely.
 
 **How does the Worker notify back in Teams?** It calls the [Bot Framework REST API](https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-send-and-receive-messages) (`POST {serviceUrl}/v3/conversations/{id}/activities`) using a bot token. The `serviceUrl` and `conversationId` were saved in D1 when the original request came in. Both approval and rejection send a notification.
 
@@ -307,19 +185,19 @@ npm run deploy
 
 #### Adding guest users to teams
 
-Microsoft Graph does not allow **app-only** (client credentials) to add **guest** users to a team. To add guests, a **team owner** (or admin) must link their account once so the Worker can use **delegated** permissions for add-member calls:
+Microsoft Graph does not allow **app-only** (client credentials) to add **guest** users to a team. To add guests, a **team owner** (or admin) must link their account once so the Worker can use **delegated** permissions for invitations and add-member calls:
 
-1. In **Azure Portal** → your app registration → **Authentication** → add a **Redirect URI** (Web):  
-   `https://<your-worker>.workers.dev/auth/microsoft/callback`  
-   Under **API permissions**, ensure **Delegated** permissions include `TeamMember.ReadWrite.All` and `User.Read` (Add permission → Microsoft Graph → Delegated).
+1. In **Azure Portal** → your app registration → **Authentication** → add a **Redirect URI** (Web):
+   `https://<your-worker>.workers.dev/auth/microsoft/callback`
+   Under **API permissions**, ensure **Delegated** permissions include `TeamMember.ReadWrite.All`, `User.Read`, and `User.Invite.All` (Add permission → Microsoft Graph → Delegated).
 2. Open in a browser: `https://<your-worker>.workers.dev/auth/microsoft`
 3. Sign in with an account that is **owner** (or team admin) of the teams you want to add guests to.
-4. On the success page, copy the **refresh token** and run:  
-   `wrangler secret put DELEGATED_REFRESH_TOKEN`  
+4. On the success page, copy the **refresh token** and run:
+   `wrangler secret put DELEGATED_REFRESH_TOKEN`
    Paste the token when prompted.
 5. Redeploy (or the next approve will use the new secret).
 
-After that, when an approve would return 403 (guest), the Worker retries the add using the delegated token and guests can be added.
+After that, when the requested user is not in the tenant, the Worker sends a B2B invitation and **adds them to the team in the same step** using the `invitedUser.id` from the invitation response. Once they accept the invite, they already have access to the team — no second approval or manual add needed.
 
 ### Local Development
 
@@ -542,6 +420,13 @@ X-Slack-Signature: v0=a1b2c3d4…  (HMAC-SHA256 of v0:{timestamp}:{body} using s
 **Worker response:** `200` (empty body). Processing happens via `ctx.waitUntil()`.
 
 ### Outbound: Worker → Graph API (add team member)
+
+When the user is **not** in the tenant (guest), the Worker first creates a B2B invitation, then adds the invited user to the team:
+
+1. **Create invitation:** `POST https://graph.microsoft.com/v1.0/invitations` (delegated token, body: `invitedUserEmailAddress`, `inviteRedirectUrl`, `sendInvitationMessage: true`). Response includes `invitedUser.id`.
+2. **Add to team:** Same as below, using `invitedUser.id` from the response. The guest gets access once they accept the invite.
+
+For users **already** in the tenant, the Worker resolves the user by email, then adds them:
 
 **Token acquisition:**
 
@@ -772,68 +657,31 @@ Authorization: Bearer eyJhbG…
 
 Every arrow between components is authenticated. There is no unauthenticated path into or out of the Worker.
 
+```mermaid
+flowchart LR
+    subgraph Inbound["Inbound"]
+        Azure[Azure Bot Service]
+        SlackIn[Slack Platform]
+    end
+
+    subgraph Worker["Cloudflare Worker"]
+        W[Routes + D1 + Secrets]
+    end
+
+    subgraph Outbound["Outbound"]
+        SlackAPI[Slack Web API]
+        Graph[Graph API]
+        BotREST[Bot Framework REST]
+    end
+
+    Azure -->|"POST /api/messages<br/>JWT (RSA), JWKS, audience, issuer, expiry"| W
+    SlackIn -->|"POST /api/slack/interactions<br/>HMAC-SHA256, timestamp, x-slack-signature"| W
+    W -->|"Bearer xoxb-…"| SlackAPI
+    W -->|"OAuth2 client credentials"| Graph
+    W -->|"BOT_ID + BOT_PASSWORD"| BotREST
 ```
-                          ┌─────────────────────────────────────────────┐
-                          │           Cloudflare Worker                 │
-                          │                                             │
-  Azure Bot Service       │   POST /api/messages                       │
-  ─────────────────       │   ┌───────────────────────────────────┐    │
-       │                  │   │ 1. Require Authorization: Bearer  │    │
-       │  JWT (RSA)       │   │ 2. Verify signature against       │    │
-       │  signed by       │   │    Microsoft JWKS endpoint        │    │
-       │  Microsoft ────────▸ │ 3. Check audience == BOT_ID       │    │
-       │                  │   │ 4. Check issuer == api.bot...com  │    │
-       │                  │   │ 5. Check expiry (300s tolerance)  │    │
-       │                  │   └───────────────────────────────────┘    │
-       │                  │                                             │
-  Slack Platform          │   POST /api/slack/interactions              │
-  ──────────────          │   ┌───────────────────────────────────┐    │
-       │                  │   │ 1. Check timestamp < 5 min old    │    │
-       │  HMAC-SHA256     │   │    (reject replays)               │    │
-       │  signed with     │   │ 2. Compute HMAC-SHA256 of         │    │
-       │  signing ──────────▸ │    v0:{timestamp}:{body}          │    │
-       │  secret          │   │ 3. Constant-time compare against  │    │
-       │                  │   │    x-slack-signature header       │    │
-       │                  │   └───────────────────────────────────┘    │
-       │                  │                                             │
-       │                  │   Outbound calls (Worker → external)       │
-       │                  │   ┌───────────────────────────────────┐    │
-       │                  │   │                                   │    │
-       │                  │   │ Slack Web API                     │    │
-       │                  │   │   Bearer xoxb-… (bot token)       │    │
-       │                  │   │   HTTPS only                      │    │
-       │                  │   │                                   │    │
-       │                  │   │ Graph API                         │    │
-       │                  │   │   OAuth2 client credentials       │    │
-       │                  │   │   client_id + client_secret       │    │
-       │                  │   │   → Bearer access_token           │    │
-       │                  │   │   HTTPS only, scoped permissions  │    │
-       │                  │   │                                   │    │
-       │                  │   │ Bot Framework REST API            │    │
-       │                  │   │   OAuth2 client credentials       │    │
-       │                  │   │   BOT_ID + BOT_PASSWORD           │    │
-       │                  │   │   → Bearer access_token           │    │
-       │                  │   │   HTTPS only                      │    │
-       │                  │   │                                   │    │
-       │                  │   └───────────────────────────────────┘    │
-       │                  │                                             │
-       │                  │   Secrets storage                          │
-       │                  │   ┌───────────────────────────────────┐    │
-       │                  │   │ All credentials stored as         │    │
-       │                  │   │ Cloudflare Worker secrets         │    │
-       │                  │   │ (encrypted at rest, never in code │    │
-       │                  │   │  or wrangler.toml)                │    │
-       │                  │   └───────────────────────────────────┘    │
-       │                  │                                             │
-       │                  │   D1 Database                               │
-       │                  │   ┌───────────────────────────────────┐    │
-       │                  │   │ Accessible only from this Worker  │    │
-       │                  │   │ (bound via wrangler.toml, not     │    │
-       │                  │   │  exposed over HTTP)               │    │
-       │                  │   └───────────────────────────────────┘    │
-       │                  │                                             │
-                          └─────────────────────────────────────────────┘
-```
+
+**Inbound:** `/api/messages` validates JWT (Bearer, JWKS, audience, issuer, expiry). `/api/slack/interactions` validates HMAC-SHA256 of `v0:{timestamp}:{body}` and timestamp &lt; 5 min. **Outbound:** Slack (bot token), Graph (client credentials), Bot Framework (client credentials). **Storage:** All credentials in Worker secrets; D1 bound via wrangler, not exposed over HTTP.
 
 ### Trust boundary breakdown
 
