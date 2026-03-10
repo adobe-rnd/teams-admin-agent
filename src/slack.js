@@ -235,7 +235,7 @@ async function handleApprove(payload, action, env) {
   try {
     const result = await addTeamMember(env, request.team_id, request.member_email);
     const invited = result.invited === true;
-    console.log(invited ? 'Invitation sent for request' : 'Add member succeeded for request', id);
+    console.log(invited ? 'Invitation sent and member added for request' : 'Add member succeeded for request', id);
 
     await reviewRequest(env.DB, id, {
       status: 'approved',
@@ -244,8 +244,8 @@ async function handleApprove(payload, action, env) {
     });
 
     const approveText = invited
-      ? `:email: <@${payload.user.id}> approved this request. An invitation was sent to ${request.member_email}. They can be added to the team once they accept.`
-      : `:white_check_mark: <@${payload.user.id}> approved this request. Invitation sent.`;
+      ? `:email: <@${payload.user.id}> approved this request. An invitation was sent to ${request.member_email} and they've been added to the team. They'll have access once they accept the invite.`
+      : `:white_check_mark: <@${payload.user.id}> approved this request. ${request.member_email} has been added to the team.`;
     const channelId = payload.channel?.id ?? env.SLACK_ADMIN_CHANNEL_ID;
     const messageTs = payload.message?.ts ?? request.slack_message_ts;
     if (messageTs) {
@@ -265,7 +265,7 @@ async function handleApprove(payload, action, env) {
           channel: channelId,
           user: payload.user.id,
           text: invited
-            ? `✅ Invitation was sent to ${request.member_email}, but the card could not be updated: ${updateErr.message}`
+            ? `✅ Invitation was sent to ${request.member_email} and they've been added to the team, but the card could not be updated: ${updateErr.message}`
             : `✅ Member was added to the team, but the card could not be updated: ${updateErr.message}`,
         }).catch(() => {});
       }
@@ -275,7 +275,7 @@ async function handleApprove(payload, action, env) {
         channel: channelId,
         user: payload.user.id,
         text: invited
-          ? `✅ An invitation was sent to ${request.member_email}. The approval card could not be updated (missing message reference).`
+          ? `✅ An invitation was sent to ${request.member_email} and they've been added to the team. The approval card could not be updated (missing message reference).`
           : '✅ Member was added to the team. The approval card could not be updated (missing message reference).',
       }).catch(() => {});
     }
@@ -284,7 +284,7 @@ async function handleApprove(payload, action, env) {
     if (request.service_url && request.conversation_id) {
       try {
         const teamsMessage = invited
-          ? `📧 An invitation was sent to ${request.member_email}. They can be added to this team once they accept the invite.`
+          ? `📧 An invitation was sent to ${request.member_email} and they've been added to this team. They'll have access once they accept the invite.`
           : `✅ ${request.member_email} has been added to this team.`;
         await replyToTeams(
           { serviceUrl: request.service_url, conversation: { id: request.conversation_id } },

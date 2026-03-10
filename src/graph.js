@@ -146,6 +146,7 @@ export async function resolveUser(env, email) {
 /**
  * Send a B2B invitation to an external email. Requires delegated token with User.Invite.All.
  * Redirect URL sends the user to Teams after they accept.
+ * Returns the invitation response (includes invitedUser.id for adding to team pro forma).
  */
 export async function sendInvitation(env, email) {
   const token = await getDelegatedToken(env);
@@ -154,7 +155,7 @@ export async function sendInvitation(env, email) {
       'DELEGATED_REFRESH_TOKEN is required to send invitations. Visit GET /auth/microsoft, sign in, then set the refresh token.',
     );
   }
-  await graphApiWithToken(
+  return graphApiWithToken(
     token,
     '/invitations',
     'POST',
@@ -167,8 +168,8 @@ export async function sendInvitation(env, email) {
 }
 
 /**
- * Add the user to the team, or if they are not in the tenant, send them a B2B invitation.
- * Returns { user } when added to team, or { invited: true, email } when an invite was sent.
+ * Add the user to the team, or if they are not in the tenant, send a B2B invitation and add them to the team pro forma (they get access once they accept).
+ * Returns { user } when added to team; { user, invited: true } when an invite was sent and they were added to the team.
  */
 export async function addTeamMember(env, teamId, email) {
   let user;
@@ -176,8 +177,24 @@ export async function addTeamMember(env, teamId, email) {
     user = await resolveUser(env, email);
   } catch (err) {
     if (!err.message?.includes('User not found')) throw err;
-    await sendInvitation(env, email);
-    return { invited: true, email };
+    const delegatedToken = await getDelegatedToken(env);
+    if (!delegatedToken) {
+      throw new Error(
+        'DELEGATED_REFRESH_TOKEN is required. Visit GET /auth/microsoft, sign in as a team owner, then set the returned refresh token as DELEGATED_REFRESH_TOKEN.',
+      );
+    }
+    const invitation = await sendInvitation(env, email);
+    const invitedUserId = invitation?.invitedUser?.id;
+    if (!invitedUserId) {
+      throw new Error('Invitation did not return invited user id');
+    }
+    const body = {
+      '@odata.type': '#microsoft.graph.aadUserConversationMember',
+      roles: [],
+      'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${invitedUserId}')`,
+    };
+    await graphApiWithToken(delegatedToken, `/teams/${teamId}/members`, 'POST', body);
+    return { user: { id: invitedUserId }, invited: true };
   }
 
   const delegatedToken = await getDelegatedToken(env);
