@@ -283,13 +283,10 @@ async function handleApprove(payload, action, env) {
     // Notify requester in Teams
     if (request.service_url && request.conversation_id) {
       try {
-        const teamsMessage = invited
-          ? `📧 An invitation was sent to ${request.member_email} and they've been added to this team. They'll have access once they accept the invite.`
-          : `✅ ${request.member_email} has been added to this team.`;
         await replyToTeams(
           { serviceUrl: request.service_url, conversation: { id: request.conversation_id } },
           env,
-          teamsMessage,
+          `✅ ${request.member_email} has been added to this team.`,
         );
       } catch (teamsErr) {
         console.error('replyToTeams failed:', teamsErr);
