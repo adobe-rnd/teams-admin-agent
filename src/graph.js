@@ -147,31 +147,32 @@ export async function resolveUser(env, email) {
  * Send a B2B invitation to an external email. Requires delegated token with User.Invite.All.
  * Redirect URL sends the user to Teams after they accept.
  * Returns the invitation response (includes invitedUser.id for adding to team pro forma).
+ * @param {object} [options] - Optional. { displayName } sets invitedUserDisplayName on the guest.
  */
-export async function sendInvitation(env, email) {
+export async function sendInvitation(env, email, options = {}) {
   const token = await getDelegatedToken(env);
   if (!token) {
     throw new Error(
       'DELEGATED_REFRESH_TOKEN is required to send invitations. Visit GET /auth/microsoft, sign in, then set the refresh token.',
     );
   }
-  return graphApiWithToken(
-    token,
-    '/invitations',
-    'POST',
-    {
-      invitedUserEmailAddress: email,
-      inviteRedirectUrl: 'https://teams.microsoft.com',
-      sendInvitationMessage: true,
-    },
-  );
+  const body = {
+    invitedUserEmailAddress: email,
+    inviteRedirectUrl: 'https://teams.microsoft.com',
+    sendInvitationMessage: true,
+  };
+  if (options.displayName?.trim()) {
+    body.invitedUserDisplayName = options.displayName.trim();
+  }
+  return graphApiWithToken(token, '/invitations', 'POST', body);
 }
 
 /**
  * Add the user to the team, or if they are not in the tenant, send a B2B invitation and add them to the team pro forma (they get access once they accept).
  * Returns { user } when added to team; { user, invited: true } when an invite was sent and they were added to the team.
+ * @param {object} [options] - Optional. { displayName } sets the guest's display name when sending an invitation.
  */
-export async function addTeamMember(env, teamId, email) {
+export async function addTeamMember(env, teamId, email, options = {}) {
   let user;
   try {
     user = await resolveUser(env, email);
@@ -183,7 +184,7 @@ export async function addTeamMember(env, teamId, email) {
         'DELEGATED_REFRESH_TOKEN is required. Visit GET /auth/microsoft, sign in as a team owner, then set the returned refresh token as DELEGATED_REFRESH_TOKEN.',
       );
     }
-    const invitation = await sendInvitation(env, email);
+    const invitation = await sendInvitation(env, email, { displayName: options.displayName });
     const invitedUserId = invitation?.invitedUser?.id;
     if (!invitedUserId) {
       throw new Error('Invitation did not return invited user id');

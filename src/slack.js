@@ -131,30 +131,27 @@ export async function handleSlackInteraction(request, env, ctx) {
   if (payload.type === 'block_actions') {
     const action = payload.actions?.[0];
     const responseUrl = payload.response_url;
-    if (
-      responseUrl &&
-      (action?.action_id === 'approve_request' || action?.action_id === 'reject_request')
-    ) {
+    // Only show spinner when we're doing an immediate action (approve without modal). For Reject or Approve @adobe.com we open a modal, so keep the card as-is so Cancel leaves buttons visible.
+    if (responseUrl && action?.action_id === 'approve_request') {
       const id = parseInt(action.value, 10);
       const request = await getRequest(env.DB, id);
-      const blocks = request
-        ? spinnerBlocks(request, env)
-        : [{ type: 'section', text: { type: 'mrkdwn', text: ':hourglass_flowing_sand: Processing…' } }];
-      const fallbackText = request
-        ? `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`
-        : 'Processing…';
-      try {
-        await fetch(responseUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            replace_original: true,
-            text: fallbackText,
-            blocks,
-          }),
-        });
-      } catch (e) {
-        console.error('response_url spinner failed:', e);
+      const isAdobe = request?.member_email?.toLowerCase().endsWith('@adobe.com');
+      if (request && request.status === 'pending' && !isAdobe) {
+        const blocks = spinnerBlocks(request, env);
+        const fallbackText = `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`;
+        try {
+          await fetch(responseUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              replace_original: true,
+              text: fallbackText,
+              blocks,
+            }),
+          });
+        } catch (e) {
+          console.error('response_url spinner failed:', e);
+        }
       }
     }
     ctx.waitUntil(handleBlockAction(payload, env));
@@ -163,6 +160,18 @@ export async function handleSlackInteraction(request, env, ctx) {
 
   if (payload.type === 'view_submission' && payload.view?.callback_id === 'reject_reason_modal') {
     ctx.waitUntil(handleRejectSubmission(payload, env));
+    return Response.json({ response_action: 'clear' });
+  }
+
+  if (payload.type === 'view_submission' && payload.view?.callback_id === 'approve_display_name_modal') {
+    const errors = {};
+    const displayNameBlock = payload.view.state?.values?.approve_display_name;
+    const displayName = displayNameBlock?.display_name?.value?.trim() ?? '';
+    if (!displayName) {
+      errors.approve_display_name = 'Display name is required.';
+      return Response.json({ response_action: 'errors', errors });
+    }
+    ctx.waitUntil(handleApproveDisplayNameSubmission(payload, env, displayName));
     return Response.json({ response_action: 'clear' });
   }
 
@@ -231,6 +240,12 @@ async function handleApprove(payload, action, env) {
   }
 
   const reviewerName = payload.user.name ?? payload.user.username ?? payload.user.id;
+
+  // Adobe emails require display name from admin; open modal instead of approving immediately.
+  if (request.member_email.toLowerCase().endsWith('@adobe.com')) {
+    await openApproveDisplayNameModal(payload, request, env);
+    return;
+  }
 
   try {
     const result = await addTeamMember(env, request.team_id, request.member_email);
@@ -441,6 +456,51 @@ async function openRejectModal(payload, action, env) {
   });
 }
 
+// ── Approve display name modal (Adobe) ───────────────────────────
+
+async function openApproveDisplayNameModal(payload, request, env) {
+  const channelId = payload.channel?.id ?? payload.container?.channel_id ?? env.SLACK_ADMIN_CHANNEL_ID;
+  const messageTs = payload.message?.ts ?? payload.container?.message_ts ?? request.slack_message_ts;
+  const id = request.id;
+  await slack(env, 'views.open', {
+    trigger_id: payload.trigger_id,
+    view: {
+      type: 'modal',
+      callback_id: 'approve_display_name_modal',
+      private_metadata: JSON.stringify({
+        requestId: id,
+        reviewerId: payload.user.id,
+        reviewerName: payload.user.name ?? payload.user.username ?? payload.user.id,
+        channelId,
+        messageTs,
+      }),
+      title: { type: 'plain_text', text: 'Enter display name' },
+      submit: { type: 'plain_text', text: 'Approve' },
+      close: { type: 'plain_text', text: 'Cancel' },
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: 'Adding Adobe employees requires entering their display name (e.g. Jane Doe).',
+          },
+        },
+        {
+          type: 'input',
+          block_id: 'approve_display_name',
+          optional: false,
+          label: { type: 'plain_text', text: 'Display name' },
+          element: {
+            type: 'plain_text_input',
+            action_id: 'display_name',
+            placeholder: { type: 'plain_text', text: 'e.g. Jane Doe' },
+          },
+        },
+      ],
+    },
+  });
+}
+
 // ── Reject modal submission ─────────────────────────────────────
 
 async function handleRejectSubmission(payload, env) {
@@ -495,6 +555,103 @@ async function handleRejectSubmission(payload, env) {
     }
   } catch (err) {
     console.error('Reject failed:', err);
+  }
+}
+
+// ── Approve display name modal submission ───────────────────────
+
+async function handleApproveDisplayNameSubmission(payload, env, displayName) {
+  const meta = JSON.parse(payload.view.private_metadata);
+  const { requestId, reviewerId, reviewerName, channelId, messageTs } = meta;
+
+  const request = await getRequest(env.DB, requestId);
+  if (!request || request.status !== 'pending') return;
+
+  const channel = channelId ?? env.SLACK_ADMIN_CHANNEL_ID;
+  const ts = messageTs ?? request.slack_message_ts;
+
+  try {
+    if (ts) {
+      try {
+        await slack(env, 'chat.update', {
+          channel,
+          ts,
+          text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`,
+          blocks: spinnerBlocks(request, env),
+        });
+      } catch (e) {
+        console.error('Approve display name spinner update failed:', e);
+      }
+    }
+
+    const result = await addTeamMember(env, request.team_id, request.member_email, { displayName });
+    const invited = result.invited === true;
+    console.log(invited ? 'Invitation sent and member added for request' : 'Add member succeeded for request', requestId);
+
+    await reviewRequest(env.DB, requestId, {
+      status: 'approved',
+      reviewerId,
+      reviewerName,
+    });
+
+    const approveText = invited
+      ? `:email: <@${reviewerId}> approved this request. An invitation was sent to ${request.member_email} and they've been added to the team. They'll have access once they accept the invite.`
+      : `:white_check_mark: <@${reviewerId}> approved this request. ${request.member_email} has been added to the team.`;
+
+    await slack(env, 'chat.update', {
+      channel,
+      ts,
+      text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${approveText}`,
+      blocks: [
+        ...cardBodyBlocks(request, env),
+        { type: 'section', text: { type: 'mrkdwn', text: approveText } },
+      ],
+    });
+
+    if (request.service_url && request.conversation_id) {
+      try {
+        await replyToTeams(
+          { serviceUrl: request.service_url, conversation: { id: request.conversation_id } },
+          env,
+          `✅ ${request.member_email} has been added to this team.`,
+        );
+      } catch (teamsErr) {
+        console.error('replyToTeams failed:', teamsErr);
+      }
+    }
+  } catch (err) {
+    console.error('Approve (display name) failed:', err);
+    if (ts) {
+      try {
+        const errorCardText = ':warning: An error occurred…';
+        await slack(env, 'chat.update', {
+          channel,
+          ts,
+          text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${errorCardText}`,
+          blocks: [
+            ...cardBodyBlocks(request, env),
+            { type: 'section', text: { type: 'mrkdwn', text: errorCardText } },
+          ],
+        });
+        const errorSnippet = String(err.message ?? err).slice(0, 2900);
+        await slack(env, 'chat.postMessage', {
+          channel,
+          thread_ts: ts,
+          text: 'Error response',
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: '```\n' + errorSnippet.replace(/```/g, '`\u200b``') + '\n```',
+              },
+            },
+          ],
+        });
+      } catch (updateErr) {
+        console.error('chat.update (approve error) failed:', updateErr);
+      }
+    }
   }
 }
 
