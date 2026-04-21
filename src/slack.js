@@ -3,7 +3,7 @@
  * Uses raw Slack Web API via fetch (no SDK).
  */
 import { setSlackMessageTs, getRequest, reviewRequest } from './db.js';
-import { addTeamMember } from './graph.js';
+import { addTeamMember, resolveUser } from './graph.js';
 import { replyToTeams } from './teams.js';
 
 // ── Slack Web API helper ────────────────────────────────────────
@@ -241,10 +241,33 @@ async function handleApprove(payload, action, env) {
 
   const reviewerName = payload.user.name ?? payload.user.username ?? payload.user.id;
 
-  // Adobe emails require display name from admin; open modal instead of approving immediately.
+  // Adobe emails: skip the display-name modal if the user already exists in the tenant.
   if (request.member_email.toLowerCase().endsWith('@adobe.com')) {
-    await openApproveDisplayNameModal(payload, request, env);
-    return;
+    let existingUser;
+    try {
+      existingUser = await resolveUser(env, request.member_email);
+    } catch {
+      // User not in tenant — need display name for the B2B invitation
+    }
+    if (!existingUser) {
+      await openApproveDisplayNameModal(payload, request, env);
+      return;
+    }
+    // User exists — show spinner and fall through to normal approval
+    const channelId = payload.channel?.id ?? env.SLACK_ADMIN_CHANNEL_ID;
+    const messageTs = payload.message?.ts ?? request.slack_message_ts;
+    if (messageTs) {
+      try {
+        await slack(env, 'chat.update', {
+          channel: channelId,
+          ts: messageTs,
+          text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`,
+          blocks: spinnerBlocks(request, env),
+        });
+      } catch (e) {
+        console.error('Spinner update failed:', e);
+      }
+    }
   }
 
   try {
