@@ -8,14 +8,20 @@ import { replyToTeams } from './teams.js';
 
 // ── Slack Web API helper ────────────────────────────────────────
 
-async function slack(env, method, body) {
+async function slack(env, method, body, { form } = {}) {
+  const headers = { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}` };
+  let fetchBody;
+  if (form) {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    fetchBody = new URLSearchParams(body).toString();
+  } else {
+    headers['Content-Type'] = 'application/json';
+    fetchBody = JSON.stringify(body);
+  }
   const res = await fetch(`https://slack.com/api/${method}`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
+    headers,
+    body: fetchBody,
   });
   const data = await res.json();
   if (!data.ok) {
@@ -37,18 +43,14 @@ function teamDeepLink(request, env) {
   return `https://teams.microsoft.com/l/team/${encodeURIComponent(channelId)}/conversations?groupId=${encodeURIComponent(groupId)}&tenantId=${encodeURIComponent(tenantId)}`;
 }
 
-function cardBodyBlocks(request, env, { displayName, slackUserId } = {}) {
+function cardBodyBlocks(request, env, { displayName } = {}) {
   const requester = request.requester_email ?? request.requester_name ?? 'Someone';
   const teamLink = teamDeepLink(request, env);
   const teamDisplay = teamLink
     ? `<${teamLink}|${request.team_name}>`
     : request.team_name;
   const intro = `${requester} requested to invite one person to Adobe Enterprise Support`;
-  const nameSuffix = displayName
-    ? ` (${displayName})`
-    : slackUserId
-      ? ` (<@${slackUserId}>)`
-      : '';
+  const nameSuffix = displayName ? ` (${displayName})` : '';
   const emailDisplay = `${request.member_email}${nameSuffix}`;
   const fields = `> *Email*: ${emailDisplay}\n> *Team*: ${teamDisplay}`;
   return [
@@ -79,7 +81,6 @@ export async function postApprovalCard(env, request) {
     throw new Error('SLACK_ADMIN_CHANNEL_ID is not set. Set it in wrangler.toml [vars] or in the Cloudflare dashboard so it is not removed on deploy.');
   }
   let displayName;
-  let slackUserId;
   if (request.member_email.toLowerCase().endsWith('@adobe.com')) {
     try {
       const user = await resolveUser(env, request.member_email);
@@ -87,12 +88,12 @@ export async function postApprovalCard(env, request) {
     } catch { /* not in tenant yet */ }
     if (!displayName) {
       try {
-        const res = await slack(env, 'users.lookupByEmail', { email: request.member_email });
-        slackUserId = res.user?.id;
+        const res = await slack(env, 'users.lookupByEmail', { email: request.member_email }, { form: true });
+        displayName = res.user?.real_name;
       } catch { /* user not on Slack */ }
     }
   }
-  const opts = { displayName, slackUserId };
+  const opts = { displayName };
   const requester = request.requester_email ?? request.requester_name ?? 'Someone';
   const result = await slack(env, 'chat.postMessage', {
     channel,
@@ -271,10 +272,17 @@ async function handleApprove(payload, action, env) {
       // User not in tenant — need display name for the B2B invitation
     }
     if (!existingUser) {
-      await openApproveDisplayNameModal(payload, request, env);
-      return;
+      try {
+        const res = await slack(env, 'users.lookupByEmail', { email: request.member_email }, { form: true });
+        resolvedDisplayName = res.user?.real_name;
+      } catch { /* user not on Slack */ }
+      if (!resolvedDisplayName) {
+        await openApproveDisplayNameModal(payload, request, env);
+        return;
+      }
+    } else {
+      resolvedDisplayName = existingUser.displayName;
     }
-    resolvedDisplayName = existingUser.displayName;
     // User exists — show spinner and fall through to normal approval
     const channelId = payload.channel?.id ?? env.SLACK_ADMIN_CHANNEL_ID;
     const messageTs = payload.message?.ts ?? request.slack_message_ts;
@@ -293,7 +301,8 @@ async function handleApprove(payload, action, env) {
   }
 
   try {
-    const result = await addTeamMember(env, request.team_id, request.member_email);
+    const memberOpts = resolvedDisplayName ? { displayName: resolvedDisplayName } : undefined;
+    const result = await addTeamMember(env, request.team_id, request.member_email, memberOpts);
     const invited = result.invited === true;
     console.log(invited ? 'Invitation sent and member added for request' : 'Add member succeeded for request', id);
 
