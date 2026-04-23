@@ -37,15 +37,15 @@ function teamDeepLink(request, env) {
   return `https://teams.microsoft.com/l/team/${encodeURIComponent(channelId)}/conversations?groupId=${encodeURIComponent(groupId)}&tenantId=${encodeURIComponent(tenantId)}`;
 }
 
-function cardBodyBlocks(request, env) {
+function cardBodyBlocks(request, env, { displayName } = {}) {
   const requester = request.requester_email ?? request.requester_name ?? 'Someone';
   const teamLink = teamDeepLink(request, env);
   const teamDisplay = teamLink
     ? `<${teamLink}|${request.team_name}>`
     : request.team_name;
-  // Blockquote lines (>) render as gray vertical bars in Slack
   const intro = `${requester} requested to invite one person to Adobe Enterprise Support`;
-  const fields = `> *Email*: ${request.member_email}\n> *Team*: ${teamDisplay}`;
+  const emailDisplay = displayName ? `${request.member_email} (${displayName})` : request.member_email;
+  const fields = `> *Email*: ${emailDisplay}\n> *Team*: ${teamDisplay}`;
   return [
     {
       type: 'section',
@@ -58,10 +58,10 @@ function cardBodyBlocks(request, env) {
   ];
 }
 
-/** Blocks for the card with a "Processing…" line instead of buttons (spinner state). */
-function spinnerBlocks(request, env) {
+/** Blocks for the card with a "Processing..." line instead of buttons (spinner state). */
+function spinnerBlocks(request, env, opts) {
   return [
-    ...cardBodyBlocks(request, env),
+    ...cardBodyBlocks(request, env, opts),
     { type: 'section', text: { type: 'mrkdwn', text: ':hourglass_flowing_sand: Processing…' } },
   ];
 }
@@ -73,12 +73,20 @@ export async function postApprovalCard(env, request) {
   if (!channel) {
     throw new Error('SLACK_ADMIN_CHANNEL_ID is not set. Set it in wrangler.toml [vars] or in the Cloudflare dashboard so it is not removed on deploy.');
   }
+  let displayName;
+  if (request.member_email.toLowerCase().endsWith('@adobe.com')) {
+    try {
+      const user = await resolveUser(env, request.member_email);
+      displayName = user?.displayName;
+    } catch { /* not in tenant yet */ }
+  }
+  const opts = { displayName };
   const requester = request.requester_email ?? request.requester_name ?? 'Someone';
   const result = await slack(env, 'chat.postMessage', {
     channel,
     text: `${requester} requested to invite ${request.member_email} to ${request.team_name}`,
     blocks: [
-      ...cardBodyBlocks(request, env),
+      ...cardBodyBlocks(request, env, opts),
       {
         type: 'actions',
         block_id: 'approval_actions',
@@ -240,6 +248,7 @@ async function handleApprove(payload, action, env) {
   }
 
   const reviewerName = payload.user.name ?? payload.user.username ?? payload.user.id;
+  let resolvedDisplayName;
 
   // Adobe emails: skip the display-name modal if the user already exists in the tenant.
   if (request.member_email.toLowerCase().endsWith('@adobe.com')) {
@@ -253,6 +262,7 @@ async function handleApprove(payload, action, env) {
       await openApproveDisplayNameModal(payload, request, env);
       return;
     }
+    resolvedDisplayName = existingUser.displayName;
     // User exists — show spinner and fall through to normal approval
     const channelId = payload.channel?.id ?? env.SLACK_ADMIN_CHANNEL_ID;
     const messageTs = payload.message?.ts ?? request.slack_message_ts;
@@ -262,7 +272,7 @@ async function handleApprove(payload, action, env) {
           channel: channelId,
           ts: messageTs,
           text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`,
-          blocks: spinnerBlocks(request, env),
+          blocks: spinnerBlocks(request, env, { displayName: resolvedDisplayName }),
         });
       } catch (e) {
         console.error('Spinner update failed:', e);
@@ -293,7 +303,7 @@ async function handleApprove(payload, action, env) {
           ts: messageTs,
           text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${approveText}`,
           blocks: [
-            ...cardBodyBlocks(request, env),
+            ...cardBodyBlocks(request, env, { displayName: resolvedDisplayName }),
             { type: 'section', text: { type: 'mrkdwn', text: approveText } },
           ],
         });
@@ -343,7 +353,7 @@ async function handleApprove(payload, action, env) {
           ts: messageTs,
           text: fallbackText,
           blocks: [
-            ...cardBodyBlocks(request, env),
+            ...cardBodyBlocks(request, env, { displayName: resolvedDisplayName }),
             { type: 'section', text: { type: 'mrkdwn', text: errorCardText } },
           ],
         });
@@ -600,7 +610,7 @@ async function handleApproveDisplayNameSubmission(payload, env, displayName) {
           channel,
           ts,
           text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`,
-          blocks: spinnerBlocks(request, env),
+          blocks: spinnerBlocks(request, env, { displayName }),
         });
       } catch (e) {
         console.error('Approve display name spinner update failed:', e);
@@ -626,7 +636,7 @@ async function handleApproveDisplayNameSubmission(payload, env, displayName) {
       ts,
       text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${approveText}`,
       blocks: [
-        ...cardBodyBlocks(request, env),
+        ...cardBodyBlocks(request, env, { displayName }),
         { type: 'section', text: { type: 'mrkdwn', text: approveText } },
       ],
     });
@@ -652,7 +662,7 @@ async function handleApproveDisplayNameSubmission(payload, env, displayName) {
           ts,
           text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${errorCardText}`,
           blocks: [
-            ...cardBodyBlocks(request, env),
+            ...cardBodyBlocks(request, env, { displayName }),
             { type: 'section', text: { type: 'mrkdwn', text: errorCardText } },
           ],
         });
