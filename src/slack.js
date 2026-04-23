@@ -37,18 +37,14 @@ function teamDeepLink(request, env) {
   return `https://teams.microsoft.com/l/team/${encodeURIComponent(channelId)}/conversations?groupId=${encodeURIComponent(groupId)}&tenantId=${encodeURIComponent(tenantId)}`;
 }
 
-function cardBodyBlocks(request, env, { displayName, slackUserId } = {}) {
+function cardBodyBlocks(request, env, { displayName } = {}) {
   const requester = request.requester_email ?? request.requester_name ?? 'Someone';
   const teamLink = teamDeepLink(request, env);
   const teamDisplay = teamLink
     ? `<${teamLink}|${request.team_name}>`
     : request.team_name;
   const intro = `${requester} requested to invite one person to Adobe Enterprise Support`;
-  const nameSuffix = displayName
-    ? ` (${displayName})`
-    : slackUserId
-      ? ` (<@${slackUserId}>)`
-      : '';
+  const nameSuffix = displayName ? ` (${displayName})` : '';
   const emailDisplay = `${request.member_email}${nameSuffix}`;
   const fields = `> *Email*: ${emailDisplay}\n> *Team*: ${teamDisplay}`;
   return [
@@ -79,20 +75,16 @@ export async function postApprovalCard(env, request) {
     throw new Error('SLACK_ADMIN_CHANNEL_ID is not set. Set it in wrangler.toml [vars] or in the Cloudflare dashboard so it is not removed on deploy.');
   }
   let displayName;
-  let slackUserId;
   if (request.member_email.toLowerCase().endsWith('@adobe.com')) {
     try {
       const user = await resolveUser(env, request.member_email);
       displayName = user?.displayName;
     } catch { /* not in tenant yet */ }
     if (!displayName) {
-      try {
-        const res = await slack(env, 'users.lookupByEmail', { email: request.member_email });
-        slackUserId = res.user?.id;
-      } catch { /* user not on Slack */ }
+      displayName = '@' + request.member_email.split('@')[0];
     }
   }
-  const opts = { displayName, slackUserId };
+  const opts = { displayName };
   const requester = request.requester_email ?? request.requester_name ?? 'Someone';
   const result = await slack(env, 'chat.postMessage', {
     channel,
