@@ -81,7 +81,7 @@ export async function postApprovalCard(env, request) {
       displayName = user?.displayName;
     } catch { /* not in tenant yet */ }
     if (!displayName) {
-      displayName = '@' + request.member_email.split('@')[0];
+      displayName = '<@' + request.member_email.split('@')[0] + '>';
     }
   }
   const opts = { displayName };
