@@ -547,6 +547,7 @@ async function openApproveDisplayNameModal(payload, request, env) {
           element: {
             type: 'plain_text_input',
             action_id: 'display_name',
+            focus_on_load: true,
             placeholder: { type: 'plain_text', text: 'e.g. Jane Doe' },
           },
         },
