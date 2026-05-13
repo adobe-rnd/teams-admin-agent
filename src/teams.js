@@ -103,6 +103,8 @@ async function processMessage(activity, env) {
     if (!hasAddIntent(text)) return;
 
     const emails = extractEmails(text);
+    console.log('Teams message text:', JSON.stringify(text));
+    console.log('Extracted emails:', emails);
     if (emails.length === 0) return;
 
     // Resolve display name and Graph-compatible ID via Connector (team.id is thread-style, not Graph GUID)
