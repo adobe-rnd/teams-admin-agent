@@ -7,7 +7,10 @@ const INTENT_WORDS = /\b(add|invite|include|onboard|grant|give\s+access|join)\b/
 // immediately followed by another letter (which can only happen when two
 // emails were concatenated).
 const COMMON_TLDS = 'com|org|net|edu|gov|mil|io|co|us|uk|de|fr|jp|cn|au|in|br|ca|me|tv|info|biz|app|dev|ai|cloud';
-const TLD_GLUE_RE = new RegExp(`\\.(${COMMON_TLDS})(?=[a-zA-Z])`, 'gi');
+// Lookahead requires the following letter(s) to lead into another local
+// part and @ — otherwise the engine would happily backtrack from .com
+// (failing its lookahead at end-of-string) to .co followed by a lone m.
+const TLD_GLUE_RE = new RegExp(`\\.(${COMMON_TLDS})(?=[a-zA-Z][a-zA-Z0-9._%+\\-]*@)`, 'gi');
 
 const HTML_ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'", nbsp: ' ' };
 
