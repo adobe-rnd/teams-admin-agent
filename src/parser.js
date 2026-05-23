@@ -27,7 +27,7 @@ function decodeEntities(text) {
 function stripMarkup(text) {
   return decodeEntities(text)
     .replace(/<at[^>]*>.*?<\/at>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
+    .replace(/<(?![^>]*@)[^>]+>/g, ' ')
     .replace(TLD_GLUE_RE, '.$1 ');
 }
 
