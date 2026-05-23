@@ -117,6 +117,113 @@ test('extractEmails: handles HTML-encoded angle-bracket addresses', () => {
   ]);
 });
 
+// ── extractEmails: separator support ──────────────────────────────
+
+test('extractEmails: comma-separated inline list', () => {
+  assert.deepEqual(
+    extractEmails('add alice@example.com, bob@example.com, carol@example.com'),
+    ['alice@example.com', 'bob@example.com', 'carol@example.com'],
+  );
+});
+
+test('extractEmails: comma without surrounding space', () => {
+  assert.deepEqual(
+    extractEmails('alice@example.com,bob@example.com'),
+    ['alice@example.com', 'bob@example.com'],
+  );
+});
+
+test('extractEmails: semicolon-separated inline list', () => {
+  assert.deepEqual(
+    extractEmails('add alice@example.com; bob@example.com; carol@example.com'),
+    ['alice@example.com', 'bob@example.com', 'carol@example.com'],
+  );
+});
+
+test('extractEmails: whitespace separators (space, tab, newline, CRLF)', () => {
+  assert.deepEqual(
+    extractEmails('alice@example.com bob@example.com\tcarol@example.com\ndan@example.com\r\neve@example.com'),
+    [
+      'alice@example.com',
+      'bob@example.com',
+      'carol@example.com',
+      'dan@example.com',
+      'eve@example.com',
+    ],
+  );
+});
+
+// ── extractEmails: address format support ─────────────────────────
+
+test('extractEmails: plus-tag in local part', () => {
+  assert.deepEqual(
+    extractEmails('add alice+team@example.com, bob+y@example.com'),
+    ['alice+team@example.com', 'bob+y@example.com'],
+  );
+});
+
+test('extractEmails: dots, underscores, hyphens, digits, percent in local part', () => {
+  const text = 'alice.smith@example.com alice_smith@example.com alice-smith@example.com alice123@example.com alice%test@example.com';
+  assert.deepEqual(extractEmails(text), [
+    'alice.smith@example.com',
+    'alice_smith@example.com',
+    'alice-smith@example.com',
+    'alice123@example.com',
+    'alice%test@example.com',
+  ]);
+});
+
+test('extractEmails: hyphenated and multi-label domains', () => {
+  // Subdomain, hyphenated domain, digits in domain.
+  const text = 'alice@mail.corp.example.com bob@my-company.example carol@example123.com';
+  assert.deepEqual(extractEmails(text), [
+    'alice@mail.corp.example.com',
+    'bob@my-company.example',
+    'carol@example123.com',
+  ]);
+});
+
+test('extractEmails: multi-level country TLDs (.co.uk, .com.au)', () => {
+  assert.deepEqual(
+    extractEmails('alice@example.co.uk bob@example.com.au'),
+    ['alice@example.co.uk', 'bob@example.com.au'],
+  );
+});
+
+test('extractEmails: glued multi-level TLD splits at the trailing common TLD', () => {
+  // When two .co.uk addresses get concatenated, the split fires at .uk
+  // (a common TLD) — not at the .co — because the .co lookahead requires
+  // [a-zA-Z] next, which fails against a literal dot.
+  assert.deepEqual(
+    extractEmails('alice@example.co.ukbob@example.com'),
+    ['alice@example.co.uk', 'bob@example.com'],
+  );
+});
+
+test('extractEmails: uppercase MAILTO: scheme', () => {
+  assert.deepEqual(
+    extractEmails('<a HREF="MAILTO:alice@example.com">Alice</a>'),
+    ['alice@example.com'],
+  );
+});
+
+test('extractEmails: mixed mailto chip and RFC-5322 inline in one message', () => {
+  const text = '<a href="mailto:alice@example.com">Alice</a>; Bob Sample <bob@example.com>';
+  assert.deepEqual(extractEmails(text), [
+    'alice@example.com',
+    'bob@example.com',
+  ]);
+});
+
+// ── extractEmails: surrounding punctuation ────────────────────────
+
+test('extractEmails: sentence punctuation and brackets around an address', () => {
+  // Trailing period (end of sentence) and wrapping parens should not be
+  // captured as part of the address.
+  assert.deepEqual(extractEmails('Please add alice@example.com.'), ['alice@example.com']);
+  assert.deepEqual(extractEmails('(alice@example.com)'), ['alice@example.com']);
+});
+
 // ── extractEmails: misc invariants ────────────────────────────────
 
 test('extractEmails: strips <at> mention so bot name is not matched', () => {
