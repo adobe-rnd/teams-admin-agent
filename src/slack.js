@@ -73,6 +73,55 @@ function spinnerBlocks(request, env, opts) {
   ];
 }
 
+/** Approve/Reject actions block — reused so the buttons can be re-rendered after recoverable errors. */
+function approvalActionsBlock(request) {
+  return {
+    type: 'actions',
+    block_id: 'approval_actions',
+    elements: [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: 'Approve' },
+        style: 'primary',
+        action_id: 'approve_request',
+        value: String(request.id),
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: 'Reject' },
+        style: 'danger',
+        action_id: 'reject_request',
+        value: String(request.id),
+      },
+    ],
+  };
+}
+
+/** Blocks shown when the approval failed with a fixable cause (expired token, not owner, …). Keeps the buttons so the admin can retry after fixing the issue. */
+function actionRequiredBlocks(request, env, opts) {
+  return [
+    ...cardBodyBlocks(request, env, opts),
+    { type: 'section', text: { type: 'mrkdwn', text: ':warning: Action required, see thread…' } },
+    approvalActionsBlock(request),
+  ];
+}
+
+/** Post the failure detail as a threaded reply. Action-required errors are rendered as mrkdwn so the README link in the message is clickable; other errors stay in a code block. */
+async function postErrorThread(env, channelId, messageTs, err, actionRequired) {
+  const message = String(err.message ?? err);
+  const text = actionRequired
+    ? message
+    : '```\n' + message.slice(0, 2900).replace(/```/g, '`​``') + '\n```';
+  await slack(env, 'chat.postMessage', {
+    channel: channelId,
+    thread_ts: messageTs,
+    text: actionRequired ? message : 'Error response',
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text } },
+    ],
+  });
+}
+
 // ── Post one approval card per email ────────────────────────────
 
 export async function postApprovalCard(env, request) {
@@ -100,26 +149,7 @@ export async function postApprovalCard(env, request) {
     text: `${requester} requested to invite ${request.member_email} to ${request.team_name}`,
     blocks: [
       ...cardBodyBlocks(request, env, opts),
-      {
-        type: 'actions',
-        block_id: 'approval_actions',
-        elements: [
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: 'Approve' },
-            style: 'primary',
-            action_id: 'approve_request',
-            value: String(request.id),
-          },
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: 'Reject' },
-            style: 'danger',
-            action_id: 'reject_request',
-            value: String(request.id),
-          },
-        ],
-      },
+      approvalActionsBlock(request),
     ],
   });
 
@@ -365,34 +395,24 @@ async function handleApprove(payload, action, env) {
     console.error('Approve failed:', err);
     const channelId = payload.channel?.id ?? payload.container?.channel_id ?? env.SLACK_ADMIN_CHANNEL_ID;
     const messageTs = payload.message?.ts ?? payload.container?.message_ts ?? request.slack_message_ts;
-    const errorCardText = ':warning: An error occurred…';
+    const actionRequired = err.actionRequired === true;
+    const errorCardText = actionRequired ? ':warning: Action required, see thread…' : ':warning: An error occurred…';
     if (messageTs) {
       try {
         const fallbackText = `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${errorCardText}`;
+        const blocks = actionRequired
+          ? actionRequiredBlocks(request, env, { displayName: resolvedDisplayName })
+          : [
+              ...cardBodyBlocks(request, env, { displayName: resolvedDisplayName }),
+              { type: 'section', text: { type: 'mrkdwn', text: errorCardText } },
+            ];
         await slack(env, 'chat.update', {
           channel: channelId,
           ts: messageTs,
           text: fallbackText,
-          blocks: [
-            ...cardBodyBlocks(request, env, { displayName: resolvedDisplayName }),
-            { type: 'section', text: { type: 'mrkdwn', text: errorCardText } },
-          ],
+          blocks,
         });
-        const errorSnippet = String(err.message ?? err).slice(0, 2900);
-        await slack(env, 'chat.postMessage', {
-          channel: channelId,
-          thread_ts: messageTs,
-          text: 'Error response',
-          blocks: [
-            {
-              type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: '```\n' + errorSnippet.replace(/```/g, '`\u200b``') + '\n```',
-              },
-            },
-          ],
-        });
+        await postErrorThread(env, channelId, messageTs, err, actionRequired);
       } catch (updateErr) {
         console.error('chat.update (approve error) failed:', updateErr);
         const errorText = `Failed to add member: ${err.message}`;
@@ -678,31 +698,21 @@ async function handleApproveDisplayNameSubmission(payload, env, displayName) {
     console.error('Approve (display name) failed:', err);
     if (ts) {
       try {
-        const errorCardText = ':warning: An error occurred…';
+        const actionRequired = err.actionRequired === true;
+        const errorCardText = actionRequired ? ':warning: Action required, see thread…' : ':warning: An error occurred…';
+        const blocks = actionRequired
+          ? actionRequiredBlocks(request, env, { displayName })
+          : [
+              ...cardBodyBlocks(request, env, { displayName }),
+              { type: 'section', text: { type: 'mrkdwn', text: errorCardText } },
+            ];
         await slack(env, 'chat.update', {
           channel,
           ts,
           text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${errorCardText}`,
-          blocks: [
-            ...cardBodyBlocks(request, env, { displayName }),
-            { type: 'section', text: { type: 'mrkdwn', text: errorCardText } },
-          ],
+          blocks,
         });
-        const errorSnippet = String(err.message ?? err).slice(0, 2900);
-        await slack(env, 'chat.postMessage', {
-          channel,
-          thread_ts: ts,
-          text: 'Error response',
-          blocks: [
-            {
-              type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: '```\n' + errorSnippet.replace(/```/g, '`\u200b``') + '\n```',
-              },
-            },
-          ],
-        });
+        await postErrorThread(env, channel, ts, err, actionRequired);
       } catch (updateErr) {
         console.error('chat.update (approve error) failed:', updateErr);
       }

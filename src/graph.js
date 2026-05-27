@@ -3,6 +3,17 @@
  * Pure fetch, no SDK.
  */
 
+const RENEW_TOKEN_URL = 'https://github.com/adobe-rnd/teams-admin-agent#renewing-the-delegated-refresh-token';
+
+/** Error subclass used to signal "the admin must fix something before the retry will succeed". */
+export class ActionRequiredError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ActionRequiredError';
+    this.actionRequired = true;
+  }
+}
+
 let _graphToken = { value: null, expiresAt: 0 };
 
 async function getGraphToken(env) {
@@ -45,8 +56,8 @@ async function graphApiWithToken(accessToken, path, method = 'GET', body = null)
   const resText = await res.text();
   if (!res.ok) {
     if (res.status === 403 && path.includes('/members')) {
-      throw new Error(
-        '403 Forbidden — the account from /auth/microsoft must be an owner of this team. If the invitee is a guest, your tenant may block adding guests via Graph; add them manually in Teams if needed.',
+      throw new ActionRequiredError(
+        `The account associated with the delegated refresh token is not an owner of this team. Sign in as a team owner and renew the token by following the steps in <${RENEW_TOKEN_URL}|the README>, then click Approve again. If the invitee is a guest, your tenant may also block adding guests via Graph — add them manually in Teams if needed.`,
       );
     }
     if (res.status === 403 && path.includes('/invitations')) {
@@ -152,8 +163,8 @@ export async function resolveUser(env, email) {
 export async function sendInvitation(env, email, options = {}) {
   const token = await getDelegatedToken(env);
   if (!token) {
-    throw new Error(
-      'DELEGATED_REFRESH_TOKEN is required to send invitations. Visit GET /auth/microsoft, sign in, then set the refresh token.',
+    throw new ActionRequiredError(
+      `The delegated refresh token is missing or expired. Renew it by following the steps in <${RENEW_TOKEN_URL}|the README>, then click Approve again.`,
     );
   }
   const body = {
@@ -180,8 +191,8 @@ export async function addTeamMember(env, teamId, email, options = {}) {
     if (!err.message?.includes('User not found')) throw err;
     const delegatedToken = await getDelegatedToken(env);
     if (!delegatedToken) {
-      throw new Error(
-        'DELEGATED_REFRESH_TOKEN is required. Visit GET /auth/microsoft, sign in as a team owner, then set the returned refresh token as DELEGATED_REFRESH_TOKEN.',
+      throw new ActionRequiredError(
+        `The delegated refresh token is missing or expired. Renew it by following the steps in <${RENEW_TOKEN_URL}|the README>, then click Approve again.`,
       );
     }
     const invitation = await sendInvitation(env, email, { displayName: options.displayName });
