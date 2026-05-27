@@ -24,7 +24,7 @@ sequenceDiagram
     Bot->>User: "2 requests submitted"
 ```
 
-**How does Teams reach the Worker?** When you register an [Azure Bot](https://portal.azure.com/#create/Microsoft.AzureBot), you set a **messaging endpoint** URL — you point this at `https://<your-worker>.workers.dev/api/messages`. From then on, any time a user @mentions the bot in Teams, Azure Bot Service delivers the message as an HTTP POST to that URL. The Worker never polls — it just receives webhooks.
+**How does Teams reach the Worker?** When you register an [Azure Bot](https://portal.azure.com/#create/Microsoft.AzureBot), you set a **messaging endpoint** URL — you point this at `https://teams-admin-agent.adobeaem.workers.dev/api/messages`. From then on, any time a user @mentions the bot in Teams, Azure Bot Service delivers the message as an HTTP POST to that URL. The Worker never polls — it just receives webhooks.
 
 **How does the Worker post to Slack?** It calls the [Slack Web API](https://api.slack.com/methods/chat.postMessage) directly via `fetch`. No Slack SDK, no Socket Mode — just `POST https://slack.com/api/chat.postMessage` with the bot token and a JSON body containing the approval card blocks.
 
@@ -76,7 +76,7 @@ sequenceDiagram
 
 **Why two round-trips for reject?** The first interaction (button click) carries a `trigger_id` — a short-lived token that Slack requires to open a modal. The Worker uses it to call `views.open`, which pops the reason form on the admin's screen. When the admin submits the modal, Slack sends a second POST (`view_submission`) to the same Worker endpoint. Only then does the Worker update D1, rewrite the Slack card, and notify Teams. If the admin clicks Cancel, nothing happens — the request stays pending.
 
-**How does Slack reach the Worker?** When you configure [Interactivity](https://api.slack.com/interactivity) in your Slack app, you set a **Request URL** — you point this at `https://<your-worker>.workers.dev/api/slack/interactions`. Every button click and modal submission is delivered as an HTTP POST to that URL. Both Flow 2 and Flow 3 use this same endpoint.
+**How does Slack reach the Worker?** When you configure [Interactivity](https://api.slack.com/interactivity) in your Slack app, you set a **Request URL** — you point this at `https://teams-admin-agent.adobeaem.workers.dev/api/slack/interactions`. Every button click and modal submission is delivered as an HTTP POST to that URL. Both Flow 2 and Flow 3 use this same endpoint.
 
 **How does the Worker add the member?** For users already in the tenant, it calls the [Microsoft Graph API](https://learn.microsoft.com/en-us/graph/api/team-post-members) (`POST /teams/{team-id}/members`) using a delegated token (or app-only where allowed). For users not yet in the tenant (guests), it sends a B2B invitation (`POST /invitations`), gets `invitedUser.id` from the response, then adds that user to the team in the same step — so once they accept the invite, they already have access (no second “add to team” action). This only happens on approval; rejection skips this step entirely.
 
@@ -108,7 +108,7 @@ A single script creates everything — Entra ID app registration, client secret,
 # Prerequisites: az cli (logged in), jq
 az login
 
-./infra/setup.sh --worker-url https://teams-admin-agent.workers.dev
+./infra/setup.sh --worker-url https://teams-admin-agent.adobeaem.workers.dev
 ```
 
 The script:
@@ -150,7 +150,7 @@ To use custom icons, replace `dist/manifest/color.png` (192×192) and `dist/mani
 1. [api.slack.com/apps](https://api.slack.com/apps) → **Create New App → From scratch**.
 2. **Interactivity & Shortcuts** → toggle **On** → Request URL:
    ```
-   https://<your-worker>.workers.dev/api/slack/interactions
+   https://teams-admin-agent.adobeaem.workers.dev/api/slack/interactions
    ```
 3. **OAuth & Permissions → Bot Token Scopes**: add `chat:write`.
 4. **Install to Workspace** → copy the `xoxb-…` token → `SLACK_BOT_TOKEN`.
@@ -185,19 +185,29 @@ npm run deploy
 
 #### Adding guest users to teams
 
-Microsoft Graph does not allow **app-only** (client credentials) to add **guest** users to a team. To add guests, a **team owner** (or admin) must link their account once so the Worker can use **delegated** permissions for invitations and add-member calls:
+Microsoft Graph does not allow **app-only** (client credentials) to add **guest** users to a team. To add guests, a **team owner** (or admin) must link their account once so the Worker can use **delegated** permissions for invitations and add-member calls.
+
+**One-time Azure setup:**
 
 1. In **Azure Portal** → your app registration → **Authentication** → add a **Redirect URI** (Web):
-   `https://<your-worker>.workers.dev/auth/microsoft/callback`
-   Under **API permissions**, ensure **Delegated** permissions include `TeamMember.ReadWrite.All`, `User.Read`, and `User.Invite.All` (Add permission → Microsoft Graph → Delegated).
-2. Open in a browser: `https://<your-worker>.workers.dev/auth/microsoft`
-3. Sign in with an account that is **owner** (or team admin) of the teams you want to add guests to.
-4. On the success page, copy the **refresh token** and run:
-   `wrangler secret put DELEGATED_REFRESH_TOKEN`
-   Paste the token when prompted.
-5. Redeploy (or the next approve will use the new secret).
+   `https://teams-admin-agent.adobeaem.workers.dev/auth/microsoft/callback`
+2. Under **API permissions**, ensure **Delegated** permissions include `TeamMember.ReadWrite.All`, `User.Read`, and `User.Invite.All` (Add permission → Microsoft Graph → Delegated).
+
+Then provision the refresh token using the **Renewing the delegated refresh token** steps below.
 
 After that, when the requested user is not in the tenant, the Worker sends a B2B invitation and **adds them to the team in the same step** using the `invitedUser.id` from the invitation response. Once they accept the invite, they already have access to the team — no second approval or manual add needed.
+
+#### Renewing the delegated refresh token
+
+Azure AD refresh tokens expire after ~90 days, and also invalidate when the signing user's password or MFA changes. When approvals start failing with `DELEGATED_REFRESH_TOKEN is required...`, refresh the token:
+
+1. Open in a browser: `https://teams-admin-agent.adobeaem.workers.dev/auth/microsoft`
+2. Sign in with an account that is **owner** (or team admin) of the teams you want to add guests to.
+3. On the success page, copy the **refresh token** and run:
+   `wrangler secret put DELEGATED_REFRESH_TOKEN`
+   Paste the token when prompted.
+
+No redeploy needed — the next approval will pick up the new secret.
 
 ### Local Development
 
