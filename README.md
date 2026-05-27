@@ -201,7 +201,7 @@ After that, when the requested user is not in the tenant, the Worker sends a B2B
 
 Azure AD refresh tokens expire after ~90 days, and also invalidate when the signing user's password or MFA changes. When approvals start failing with `DELEGATED_REFRESH_TOKEN is required...`, refresh the token:
 
-1. Open in a browser: `https://teams-admin-agent.adobeaem.workers.dev/auth/microsoft`
+1. Open in an **incognito** browser: `https://teams-admin-agent.adobeaem.workers.dev/auth/microsoft`
 2. Sign in with an account that is **owner** (or team admin) of the teams you want to add guests to.
 3. On the success page, copy the **refresh token** and run:
    `wrangler secret put DELEGATED_REFRESH_TOKEN`
