@@ -223,3 +223,36 @@ export async function addTeamMember(env, teamId, email, options = {}) {
   await graphApiWithToken(delegatedToken, `/teams/${teamId}/members`, 'POST', body);
   return { user };
 }
+
+/**
+ * Remove a member from the team. Resolves the membership id by matching the
+ * email across the (paginated) member list, then DELETEs it. Requires a
+ * delegated (team-owner) token, same as adding.
+ */
+export async function removeTeamMember(env, teamId, email) {
+  const target = email.toLowerCase().trim();
+  let membershipId = null;
+  let path = `/teams/${teamId}/members`;
+  while (path && !membershipId) {
+    const data = await graphApi(env, path);
+    for (const m of data.value ?? []) {
+      if (m.email && m.email.toLowerCase().trim() === target) {
+        membershipId = m.id;
+        break;
+      }
+    }
+    const nextLink = data['@odata.nextLink'];
+    path = nextLink ? nextLink.replace(/^https:\/\/graph\.microsoft\.com\/v1\.0/, '') : null;
+  }
+  if (!membershipId) {
+    throw new Error(`User not found: ${email} is not a member of this team.`);
+  }
+  const delegatedToken = await getDelegatedToken(env);
+  if (!delegatedToken) {
+    throw new ActionRequiredError(
+      `The delegated refresh token is missing or expired. Renew it by following the steps in <${RENEW_TOKEN_URL}|the README>, then click ⚠️ Remove again.`,
+    );
+  }
+  await graphApiWithToken(delegatedToken, `/teams/${teamId}/members/${membershipId}`, 'DELETE');
+  return { removed: true };
+}

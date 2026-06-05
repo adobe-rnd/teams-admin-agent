@@ -2,6 +2,8 @@ const EMAIL_RE = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
 
 const INTENT_WORDS = /\b(add|invite|include|onboard|grant|give\s+access|join)\b/i;
 
+const REMOVE_WORDS = /\b(remove|delete|uninvite|revoke|kick)\b/i;
+
 // Common TLDs used to separate emails that Teams flattens together when
 // users send bullet lists. We insert a space after these when they are
 // immediately followed by another letter (which can only happen when two
@@ -34,6 +36,13 @@ function stripMarkup(text) {
 export function hasAddIntent(text) {
   if (!text) return false;
   return INTENT_WORDS.test(stripMarkup(text));
+}
+
+// "uninvite" deliberately does not trigger hasAddIntent (no word boundary
+// before "invite"), so a remove message is never misread as an add.
+export function hasRemoveIntent(text) {
+  if (!text) return false;
+  return REMOVE_WORDS.test(stripMarkup(text));
 }
 
 /**

@@ -3,7 +3,7 @@
  * Uses raw Slack Web API via fetch (no SDK).
  */
 import { setSlackMessageTs, getRequest, reviewRequest } from './db.js';
-import { addTeamMember, resolveUser } from './graph.js';
+import { addTeamMember, removeTeamMember, resolveUser } from './graph.js';
 import { replyToTeams } from './teams.js';
 
 // ── Slack Web API helper ────────────────────────────────────────
@@ -43,13 +43,23 @@ function teamDeepLink(request, env) {
   return `https://teams.microsoft.com/l/team/${encodeURIComponent(channelId)}/conversations?groupId=${encodeURIComponent(groupId)}&tenantId=${encodeURIComponent(tenantId)}`;
 }
 
+/** One-line fallback/notification summary (also used as Slack `text`). */
+function requestSummary(request) {
+  const requester = request.requester_email ?? request.requester_name ?? 'Someone';
+  return request.action === 'remove'
+    ? `${requester} requested to remove ${request.member_email} from ${request.team_name}`
+    : `${requester} requested to invite ${request.member_email} to ${request.team_name}`;
+}
+
 function cardBodyBlocks(request, env, { displayName } = {}) {
   const requester = request.requester_email ?? request.requester_name ?? 'Someone';
   const teamLink = teamDeepLink(request, env);
   const teamDisplay = teamLink
     ? `<${teamLink}|${request.team_name}>`
     : request.team_name;
-  const intro = `${requester} requested to invite one person to Adobe Enterprise Support`;
+  const intro = request.action === 'remove'
+    ? `${requester} requested to remove one person from Adobe Enterprise Support`
+    : `${requester} requested to invite one person to Adobe Enterprise Support`;
   const nameSuffix = displayName ? ` (${displayName})` : '';
   const emailDisplay = `${request.member_email}${nameSuffix}`;
   const fields = `> *Email*: ${emailDisplay}\n> *Team*: ${teamDisplay}`;
@@ -73,27 +83,39 @@ function spinnerBlocks(request, env, opts) {
   ];
 }
 
-/** Approve/Reject actions block — reused so the buttons can be re-rendered after recoverable errors. */
+/**
+ * Approve/Reject actions block — reused so the buttons can be re-rendered after recoverable errors.
+ */
 function approvalActionsBlock(request) {
+  const isRemove = request.action === 'remove';
+  const confirmButton = {
+    type: 'button',
+    text: { type: 'plain_text', text: isRemove ? '⚠️ Remove' : 'Invite', emoji: true },
+    style: isRemove ? 'danger' : 'primary',
+    action_id: 'approve_request',
+    value: String(request.id),
+  };
+  // Removal is destructive, so guard the single click with Slack's native
+  // confirm dialog. Invite fires immediately.
+  if (isRemove) {
+    confirmButton.confirm = {
+      title: { type: 'plain_text', text: 'Remove member?' },
+      text: { type: 'mrkdwn', text: `This removes *${request.member_email}* from *${request.team_name}*.` },
+      confirm: { type: 'plain_text', text: 'Remove' },
+      deny: { type: 'plain_text', text: 'Cancel' },
+      style: 'danger',
+    };
+  }
+  const dismissButton = {
+    type: 'button',
+    text: { type: 'plain_text', text: 'Reject' },
+    action_id: 'reject_request',
+    value: String(request.id),
+  };
   return {
     type: 'actions',
     block_id: 'approval_actions',
-    elements: [
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: 'Approve' },
-        style: 'primary',
-        action_id: 'approve_request',
-        value: String(request.id),
-      },
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: 'Reject' },
-        style: 'danger',
-        action_id: 'reject_request',
-        value: String(request.id),
-      },
-    ],
+    elements: [confirmButton, dismissButton],
   };
 }
 
@@ -143,10 +165,9 @@ export async function postApprovalCard(env, request) {
     }
   }
   const opts = { displayName };
-  const requester = request.requester_email ?? request.requester_name ?? 'Someone';
   const result = await slack(env, 'chat.postMessage', {
     channel,
-    text: `${requester} requested to invite ${request.member_email} to ${request.team_name}`,
+    text: requestSummary(request),
     blocks: [
       ...cardBodyBlocks(request, env, opts),
       approvalActionsBlock(request),
@@ -187,9 +208,12 @@ export async function handleSlackInteraction(request, env, ctx) {
       const id = parseInt(action.value, 10);
       const request = await getRequest(env.DB, id);
       const isAdobe = request?.member_email?.toLowerCase().endsWith('@adobe.com');
-      if (request && request.status === 'pending' && !isAdobe) {
+      const isRemove = request?.action === 'remove';
+      // Adobe adds open a display-name modal first (no spinner). Removals and
+      // non-Adobe adds act immediately, so show the spinner right away.
+      if (request && request.status === 'pending' && (isRemove || !isAdobe)) {
         const blocks = spinnerBlocks(request, env);
-        const fallbackText = `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`;
+        const fallbackText = `${requestSummary(request)}\nProcessing…`;
         try {
           await fetch(responseUrl, {
             method: 'POST',
@@ -260,9 +284,7 @@ async function handleApprove(payload, action, env) {
         const blocks = request
           ? [...cardBodyBlocks(request, env), { type: 'section', text: { type: 'mrkdwn', text: statusText } }]
           : [{ type: 'section', text: { type: 'mrkdwn', text: statusText } }];
-        const fallbackText = request
-          ? `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${statusText}`
-          : statusText;
+        const fallbackText = request ? `${requestSummary(request)}\n${statusText}` : statusText;
         console.log('chat.update (already processed) channel=', channelId, 'ts=', messageTs);
         const updateRes = await slack(env, 'chat.update', {
           channel: channelId,
@@ -287,6 +309,11 @@ async function handleApprove(payload, action, env) {
         text: statusText,
       }).catch(() => {});
     }
+    return;
+  }
+
+  if (request.action === 'remove') {
+    await handleRemove(payload, request, env);
     return;
   }
 
@@ -321,7 +348,7 @@ async function handleApprove(payload, action, env) {
         await slack(env, 'chat.update', {
           channel: channelId,
           ts: messageTs,
-          text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`,
+          text: `${requestSummary(request)}\nProcessing…`,
           blocks: spinnerBlocks(request, env, { displayName: resolvedDisplayName }),
         });
       } catch (e) {
@@ -352,7 +379,7 @@ async function handleApprove(payload, action, env) {
         await slack(env, 'chat.update', {
           channel: channelId,
           ts: messageTs,
-          text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${approveText}`,
+          text: `${requestSummary(request)}\n${approveText}`,
           blocks: [
             ...cardBodyBlocks(request, env, { displayName: resolvedDisplayName }),
             { type: 'section', text: { type: 'mrkdwn', text: approveText } },
@@ -399,7 +426,7 @@ async function handleApprove(payload, action, env) {
     const errorCardText = actionRequired ? ':warning: Action required, see thread…' : ':warning: An error occurred…';
     if (messageTs) {
       try {
-        const fallbackText = `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${errorCardText}`;
+        const fallbackText = `${requestSummary(request)}\n${errorCardText}`;
         const blocks = actionRequired
           ? actionRequiredBlocks(request, env, { displayName: resolvedDisplayName })
           : [
@@ -443,6 +470,94 @@ async function handleApprove(payload, action, env) {
   }
 }
 
+// ── Remove (destructive) approval ────────────────────────────────
+
+async function handleRemove(payload, request, env) {
+  const id = request.id;
+  console.log('Remove started for request', id);
+  const reviewerName = payload.user.name ?? payload.user.username ?? payload.user.id;
+  const channelId = payload.channel?.id ?? payload.container?.channel_id ?? env.SLACK_ADMIN_CHANNEL_ID;
+  const messageTs = payload.message?.ts ?? payload.container?.message_ts ?? request.slack_message_ts;
+  try {
+    await removeTeamMember(env, request.team_id, request.member_email);
+    console.log('Remove member succeeded for request', id);
+
+    await reviewRequest(env.DB, id, {
+      status: 'approved',
+      reviewerId: payload.user.id,
+      reviewerName,
+    });
+
+    const doneText = `:white_check_mark: <@${payload.user.id}> removed ${request.member_email} from the team.`;
+    if (messageTs) {
+      try {
+        await slack(env, 'chat.update', {
+          channel: channelId,
+          ts: messageTs,
+          text: `${requestSummary(request)}\n${doneText}`,
+          blocks: [
+            ...cardBodyBlocks(request, env),
+            { type: 'section', text: { type: 'mrkdwn', text: doneText } },
+          ],
+        });
+      } catch (updateErr) {
+        console.error('Slack chat.update failed:', updateErr);
+        await slack(env, 'chat.postEphemeral', {
+          channel: channelId,
+          user: payload.user.id,
+          text: `✅ ${request.member_email} was removed from the team, but the card could not be updated: ${updateErr.message}`,
+        }).catch(() => {});
+      }
+    }
+
+    if (request.service_url && request.conversation_id) {
+      try {
+        await replyToTeams(
+          { serviceUrl: request.service_url, conversation: { id: request.conversation_id } },
+          env,
+          `✅ ${request.member_email} has been removed from this team.`,
+        );
+      } catch (teamsErr) {
+        console.error('replyToTeams failed:', teamsErr);
+      }
+    }
+  } catch (err) {
+    console.error('Remove failed:', err);
+    const actionRequired = err.actionRequired === true;
+    const errorCardText = actionRequired ? ':warning: Action required, see thread…' : ':warning: An error occurred…';
+    if (messageTs) {
+      try {
+        const blocks = actionRequired
+          ? actionRequiredBlocks(request, env)
+          : [
+              ...cardBodyBlocks(request, env),
+              { type: 'section', text: { type: 'mrkdwn', text: errorCardText } },
+            ];
+        await slack(env, 'chat.update', {
+          channel: channelId,
+          ts: messageTs,
+          text: `${requestSummary(request)}\n${errorCardText}`,
+          blocks,
+        });
+        await postErrorThread(env, channelId, messageTs, err, actionRequired);
+      } catch (updateErr) {
+        console.error('chat.update (remove error) failed:', updateErr);
+        await slack(env, 'chat.postEphemeral', {
+          channel: channelId,
+          user: payload.user.id,
+          text: `Failed to remove member: ${err.message}`,
+        }).catch(() => {});
+      }
+    } else {
+      await slack(env, 'chat.postEphemeral', {
+        channel: channelId,
+        user: payload.user.id,
+        text: `Failed to remove member: ${err.message}`,
+      }).catch(() => {});
+    }
+  }
+}
+
 async function openRejectModal(payload, action, env) {
   const id = parseInt(action.value, 10);
   const request = await getRequest(env.DB, id);
@@ -460,9 +575,7 @@ async function openRejectModal(payload, action, env) {
         const blocks = request
           ? [...cardBodyBlocks(request, env), { type: 'section', text: { type: 'mrkdwn', text: statusText } }]
           : [{ type: 'section', text: { type: 'mrkdwn', text: statusText } }];
-        const fallbackText = request
-          ? `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${statusText}`
-          : statusText;
+        const fallbackText = request ? `${requestSummary(request)}\n${statusText}` : statusText;
         console.log('chat.update (reject already processed) channel=%s ts=%s', channelId, messageTs);
         await slack(env, 'chat.update', {
           channel: channelId,
@@ -510,7 +623,9 @@ async function openRejectModal(payload, action, env) {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `Rejecting request to add ${request.member_email} to ${request.team_name}.`,
+            text: request.action === 'remove'
+              ? `Rejecting request to remove ${request.member_email} from ${request.team_name}.`
+              : `Rejecting request to add ${request.member_email} to ${request.team_name}.`,
           },
         },
         {
@@ -595,7 +710,7 @@ async function handleRejectSubmission(payload, env) {
         await slack(env, 'chat.update', {
           channel,
           ts,
-          text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`,
+          text: `${requestSummary(request)}\nProcessing…`,
           blocks: spinnerBlocks(request, env),
         });
       } catch (e) {
@@ -608,12 +723,12 @@ async function handleRejectSubmission(payload, env) {
     });
 
     const reason = reviewNote || '—';
+    const isRemove = request.action === 'remove';
     const rejectText = `:no_entry_sign: <@${reviewerId}> rejected this request. Reason: ${reason}`;
-    const requester = request.requester_email ?? request.requester_name ?? 'Someone';
     await slack(env, 'chat.update', {
       channel,
       ts,
-      text: `${requester} requested to invite ${request.member_email} to ${request.team_name}\n${rejectText}`,
+      text: `${requestSummary(request)}\n${rejectText}`,
       blocks: [
         ...cardBodyBlocks(request, env),
         { type: 'section', text: { type: 'mrkdwn', text: rejectText } },
@@ -621,11 +736,12 @@ async function handleRejectSubmission(payload, env) {
     });
 
     if (request.service_url && request.conversation_id) {
-      const reason = reviewNote || '—';
       await replyToTeams(
         { serviceUrl: request.service_url, conversation: { id: request.conversation_id } },
         env,
-        `🚫 ${request.member_email} was not added to this team.\n\nReason: ${reason}`,
+        isRemove
+          ? `🚫 ${request.member_email} was not removed from this team.\n\nReason: ${reason}`
+          : `🚫 ${request.member_email} was not added to this team.\n\nReason: ${reason}`,
       );
     }
   } catch (err) {

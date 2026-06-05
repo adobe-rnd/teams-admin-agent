@@ -5,7 +5,7 @@
  * records, posts Slack approval cards, and replies in Teams.
  */
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { extractEmails, hasAddIntent } from './parser.js';
+import { extractEmails, hasAddIntent, hasRemoveIntent } from './parser.js';
 import { createRequest } from './db.js';
 import { postApprovalCard } from './slack.js';
 import { getTeamName, getRequesterEmail, getTeamMemberEmails } from './graph.js';
@@ -100,7 +100,10 @@ async function processMessage(activity, env) {
     if (!teamsTeamId) return;
 
     const text = activity.text ?? '';
-    if (!hasAddIntent(text)) return;
+    // Remove intent wins when both appear, so a destructive request is never
+    // silently downgraded to an add.
+    const action = hasRemoveIntent(text) ? 'remove' : hasAddIntent(text) ? 'add' : null;
+    if (!action) return;
 
     const emails = extractEmails(text);
     console.log('Teams message text:', JSON.stringify(text));
@@ -131,7 +134,8 @@ async function processMessage(activity, env) {
     const requesterEmail = await getRequesterEmail(env, requesterAadId);
     const cleanMsg = stripMentions(activity.text ?? '');
 
-    // Exclude emails that are already team members (check before creating requests)
+    // Membership check (before creating requests). For add, skip people who
+    // are already members; for remove, skip people who aren't members.
     let memberEmails;
     try {
       memberEmails = await getTeamMemberEmails(env, teamId);
@@ -139,27 +143,30 @@ async function processMessage(activity, env) {
       console.error('getTeamMemberEmails failed:', err);
       memberEmails = new Set();
     }
-    const toAdd = [];
-    const alreadyMembers = [];
+    const isRemove = action === 'remove';
+    const toProcess = [];
+    const skipped = [];
     for (const email of emails) {
-      const normalized = email.toLowerCase().trim();
-      if (memberEmails.has(normalized)) {
-        alreadyMembers.push(email);
+      const isMember = memberEmails.has(email.toLowerCase().trim());
+      // remove → process members, skip non-members; add → the reverse.
+      if (isMember === isRemove) {
+        toProcess.push(email);
       } else {
-        toAdd.push(email);
+        skipped.push(email);
       }
     }
 
     const created = [];
     const failed = [];
 
-    for (const email of toAdd) {
+    for (const email of toProcess) {
       try {
         const req = await createRequest(env.DB, {
           requesterName, requesterAadId, requesterEmail, teamId, teamName, teamsChannelId: teamsTeamId,
           memberEmail: email, originalMessage: cleanMsg,
           conversationId: activity.conversation?.id,
           serviceUrl: activity.serviceUrl,
+          action,
         });
         await postApprovalCard(env, req);
         created.push(req);
@@ -170,22 +177,22 @@ async function processMessage(activity, env) {
     }
 
     const lines = [];
-    if (alreadyMembers.length > 0) {
-      const alreadyText =
-        alreadyMembers.length === 1
-          ? 'The following user is already a member of this team:'
-          : 'The following users are already a member of this team:';
-      lines.push(alreadyText, '');
-      alreadyMembers.forEach((e, i) => {
+    if (skipped.length > 0) {
+      const one = skipped.length === 1;
+      const skippedText = isRemove
+        ? (one ? 'The following user is not a member of this team:' : 'The following users are not members of this team:')
+        : (one ? 'The following user is already a member of this team:' : 'The following users are already members of this team:');
+      lines.push(skippedText, '');
+      skipped.forEach((e, i) => {
         lines.push(`• ${e}`);
-        if (i < alreadyMembers.length - 1) lines.push('');
+        if (i < skipped.length - 1) lines.push('');
       });
       if (created.length > 0 || failed.length > 0) lines.push('', '');
     }
     if (created.length) {
       const n = created.length;
       const requestWord = n === 1 ? 'request' : 'requests';
-      lines.push(`Invitation ${requestWord} submitted for approval:`, '');
+      lines.push(`${isRemove ? 'Removal' : 'Invitation'} ${requestWord} submitted for approval:`, '');
       created.forEach((r, i) => {
         lines.push(`• ${r.member_email}`);
         if (i < created.length - 1) lines.push('');

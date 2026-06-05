@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractEmails, hasAddIntent } from './parser.js';
+import { extractEmails, hasAddIntent, hasRemoveIntent } from './parser.js';
 
 // ── hasAddIntent ──────────────────────────────────────────────────
 
@@ -20,6 +20,34 @@ test('hasAddIntent: returns false for empty/missing text', () => {
   assert.equal(hasAddIntent(''), false);
   assert.equal(hasAddIntent(null), false);
   assert.equal(hasAddIntent(undefined), false);
+});
+
+// ── hasRemoveIntent ───────────────────────────────────────────────
+
+test('hasRemoveIntent: matches remove/delete/uninvite/revoke/kick verbs', () => {
+  assert.equal(hasRemoveIntent('please remove alice@example.com'), true);
+  assert.equal(hasRemoveIntent('delete Bob from the team'), true);
+  assert.equal(hasRemoveIntent('uninvite carol@example.com'), true);
+  assert.equal(hasRemoveIntent('revoke access for dan@example.com'), true);
+  assert.equal(hasRemoveIntent('kick this user'), true);
+});
+
+test('hasRemoveIntent: an add request is not a remove request', () => {
+  assert.equal(hasRemoveIntent('please add alice@example.com'), false);
+  assert.equal(hasRemoveIntent('invite Bob to the team'), false);
+});
+
+test('hasRemoveIntent: returns false for empty/missing text', () => {
+  assert.equal(hasRemoveIntent(''), false);
+  assert.equal(hasRemoveIntent(null), false);
+  assert.equal(hasRemoveIntent(undefined), false);
+});
+
+test('"uninvite" reads as remove, not add', () => {
+  // No word boundary before "invite" inside "uninvite", so it must not
+  // trip the add detector while it does trip the remove detector.
+  assert.equal(hasAddIntent('uninvite carol@example.com'), false);
+  assert.equal(hasRemoveIntent('uninvite carol@example.com'), true);
 });
 
 // ── extractEmails: mailto chips (commit 22f49c6) ──────────────────
