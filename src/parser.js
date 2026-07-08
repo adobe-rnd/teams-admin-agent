@@ -9,10 +9,13 @@ const REMOVE_WORDS = /\b(remove|delete|uninvite|revoke|kick)\b/i;
 // immediately followed by another letter (which can only happen when two
 // emails were concatenated).
 const COMMON_TLDS = 'com|org|net|edu|gov|mil|io|co|us|uk|de|fr|jp|cn|au|in|br|ca|me|tv|info|biz|app|dev|ai|cloud';
-// Lookahead requires the following letter(s) to lead into another local
-// part and @ — otherwise the engine would happily backtrack from .com
-// (failing its lookahead at end-of-string) to .co followed by a lone m.
-const TLD_GLUE_RE = new RegExp(`\\.(${COMMON_TLDS})(?=[a-zA-Z][a-zA-Z0-9._%+\\-]*@)`, 'gi');
+// The glued .tld must sit at the end of a *domain* (preceded by @<domain>),
+// never inside a local part — otherwise a local part like "Vanessa.Calvo..."
+// splits at its ".ca". Lookahead requires the following letter(s) to lead
+// into another local part and @ — otherwise the engine would happily
+// backtrack from .com (failing its lookahead at end-of-string) to .co
+// followed by a lone m.
+const TLD_GLUE_RE = new RegExp(`(@[a-zA-Z0-9.\\-]+\\.(?:${COMMON_TLDS}))(?=[a-zA-Z][a-zA-Z0-9._%+\\-]*@)`, 'gi');
 
 const HTML_ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'", nbsp: ' ' };
 
@@ -30,7 +33,7 @@ function stripMarkup(text) {
   return decodeEntities(text)
     .replace(/<at[^>]*>.*?<\/at>/gi, ' ')
     .replace(/<(?![^>]*@)[^>]+>/g, ' ')
-    .replace(TLD_GLUE_RE, '.$1 ');
+    .replace(TLD_GLUE_RE, '$1 ');
 }
 
 export function hasAddIntent(text) {

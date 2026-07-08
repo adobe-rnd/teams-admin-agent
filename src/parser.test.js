@@ -113,6 +113,17 @@ test('extractEmails: preserves trailing dot-co address when nothing follows', ()
   assert.deepEqual(extractEmails('add alice@example.co'), ['alice@example.co']);
 });
 
+test('extractEmails: does not split a local part containing a common-TLD substring', () => {
+  // Regression: "Vanessa.CalvoBarreto@..." has ".ca" (a common TLD) inside the
+  // local part with a letter+@ following, so the glue splitter fired there and
+  // dropped the "Vanessa.Ca" prefix. Glue splitting must only fire on a .tld
+  // that ends a domain (after @), never inside a local part.
+  assert.deepEqual(
+    extractEmails('add Vanessa.CalvoBarreto@terumo-europe.com'),
+    ['vanessa.calvobarreto@terumo-europe.com'],
+  );
+});
+
 // ── extractEmails: RFC-5322 angle brackets (commit c8f3ff1) ───────
 
 test('extractEmails: extracts addresses wrapped in <...> mailbox brackets', () => {
