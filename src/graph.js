@@ -55,6 +55,11 @@ async function graphApiWithToken(accessToken, path, method = 'GET', body = null)
   const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, opts);
   const resText = await res.text();
   if (!res.ok) {
+    if (res.status === 429) {
+      throw new ActionRequiredError(
+        `Microsoft Graph is rate limiting requests. Please wait a while, then retry using the buttons on the request card.\n\nGraph ${method} ${path} (${res.status}): ${resText}`,
+      );
+    }
     if (res.status === 403 && path.includes('/members')) {
       throw new ActionRequiredError(
         `The account associated with the delegated refresh token is not an owner of this team. Sign in as a team owner and renew the token by following the steps in <${RENEW_TOKEN_URL}|the README>, then click Approve again. If the invitee is a guest, your tenant may also block adding guests via Graph — add them manually in Teams if needed.`,

@@ -80,6 +80,8 @@ sequenceDiagram
 
 **How does the Worker add the member?** For users already in the tenant, it calls the [Microsoft Graph API](https://learn.microsoft.com/en-us/graph/api/team-post-members) (`POST /teams/{team-id}/members`) using a delegated token (or app-only where allowed). For users not yet in the tenant (guests), it sends a B2B invitation (`POST /invitations`), gets `invitedUser.id` from the response, then adds that user to the team in the same step — so once they accept the invite, they already have access (no second “add to team” action). This only happens on approval; rejection skips this step entirely.
 
+**What happens if Graph rate limits an approval?** A Graph `429 TooManyRequests` response leaves the request pending and restores the Slack card's approval/rejection buttons. The error details and instructions to wait before retrying appear in the thread. An admin can retry from the same card without asking the requester to resubmit; retries are manual, not automatic. This also applies to display-name modal approvals and member removals.
+
 **How does the Worker notify back in Teams?** It calls the [Bot Framework REST API](https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-send-and-receive-messages) (`POST {serviceUrl}/v3/conversations/{id}/activities`) using a bot token. The `serviceUrl` and `conversationId` were saved in D1 when the original request came in. Both approval and rejection send a notification.
 
 ### What you deploy vs. what's managed
