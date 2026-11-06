@@ -2,6 +2,9 @@ import { handleTeamsActivity } from './teams.js';
 import { handleSlackInteraction } from './slack.js';
 import { handleAuthMicrosoft, handleAuthMicrosoftCallback } from './auth.js';
 
+// Member requests from other Workers of the account, through a service binding.
+export { MembershipRequests } from './rpc.js';
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);

@@ -43,16 +43,22 @@ function teamDeepLink(request, env) {
   return `https://teams.microsoft.com/l/team/${encodeURIComponent(channelId)}/conversations?groupId=${encodeURIComponent(groupId)}&tenantId=${encodeURIComponent(tenantId)}`;
 }
 
+/** Who asked, for the card: their email or name, and what asked for them, if not they. */
+export function requesterLabel(request) {
+  const who = request.requester_email ?? request.requester_name ?? 'Someone';
+  return request.via ? `${who} (via ${request.via})` : who;
+}
+
 /** One-line fallback/notification summary (also used as Slack `text`). */
 function requestSummary(request) {
-  const requester = request.requester_email ?? request.requester_name ?? 'Someone';
+  const requester = requesterLabel(request);
   return request.action === 'remove'
     ? `${requester} requested to remove ${request.member_email} from ${request.team_name}`
     : `${requester} requested to invite ${request.member_email} to ${request.team_name}`;
 }
 
 function cardBodyBlocks(request, env, { displayName } = {}) {
-  const requester = request.requester_email ?? request.requester_name ?? 'Someone';
+  const requester = requesterLabel(request);
   const teamLink = teamDeepLink(request, env);
   const teamDisplay = teamLink
     ? `<${teamLink}|${request.team_name}>`
@@ -767,7 +773,7 @@ async function handleApproveDisplayNameSubmission(payload, env, displayName) {
         await slack(env, 'chat.update', {
           channel,
           ts,
-          text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`,
+          text: `${requesterLabel(request)} requested to invite ${request.member_email} to ${request.team_name}\nProcessing…`,
           blocks: spinnerBlocks(request, env, { displayName }),
         });
       } catch (e) {
@@ -792,7 +798,7 @@ async function handleApproveDisplayNameSubmission(payload, env, displayName) {
     await slack(env, 'chat.update', {
       channel,
       ts,
-      text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${approveText}`,
+      text: `${requesterLabel(request)} requested to invite ${request.member_email} to ${request.team_name}\n${approveText}`,
       blocks: [
         ...cardBodyBlocks(request, env, { displayName }),
         { type: 'section', text: { type: 'mrkdwn', text: approveText } },
@@ -825,7 +831,7 @@ async function handleApproveDisplayNameSubmission(payload, env, displayName) {
         await slack(env, 'chat.update', {
           channel,
           ts,
-          text: `${request.requester_email ?? request.requester_name} requested to invite ${request.member_email} to ${request.team_name}\n${errorCardText}`,
+          text: `${requesterLabel(request)} requested to invite ${request.member_email} to ${request.team_name}\n${errorCardText}`,
           blocks,
         });
         await postErrorThread(env, channel, ts, err, actionRequired);
