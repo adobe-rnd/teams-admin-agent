@@ -84,6 +84,29 @@ sequenceDiagram
 
 **How does the Worker notify back in Teams?** It calls the [Bot Framework REST API](https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-send-and-receive-messages) (`POST {serviceUrl}/v3/conversations/{id}/activities`) using a bot token. The `serviceUrl` and `conversationId` were saved in D1 when the original request came in. Both approval and rejection send a notification.
 
+### Flow 4: Requests from another Worker (service binding)
+
+Teams never delivers a message written by a bot to another bot, so a bot cannot ask by mentioning `@admin-bot`. Workers on the same Cloudflare account (such as opspile, whose thread agents relay add-user requests they find in customer threads) bind the `MembershipRequests` entrypoint instead:
+
+```toml
+services = [{ binding = "TEAMS_ADMIN", service = "teams-admin-agent", entrypoint = "MembershipRequests" }]
+```
+
+```js
+const out = await env.TEAMS_ADMIN.submit({
+  action: 'add',                                   // or 'remove'
+  emails: ['alice@co.com'],                        // at most 20
+  teamId: '<Microsoft 365 group id>',
+  conversationId: '19:…@thread.tacv2;messageid=<root id>',  // where admin-bot answers
+  requester: { name: 'Jane Smith', email: 'jane@co.com', aadObjectId: '…' },  // who asked
+  via: 'opspile',                                  // shown on the card: "jane@co.com (via opspile)"
+  message: 'can you add alice@co.com?',            // optional, kept with the request
+});
+// { ok: true, created: [{ id, email }], skipped: [email], failed: [{ email, error }], replied }
+```
+
+It takes the same path as a mention (`src/requests.js`): already-members are skipped, each other email gets a D1 row and an approval card in `SLACK_ADMIN_CHANNEL_ID`, and admin-bot answers in the Teams thread now and once each request is reviewed (`replied` is false when it could not, e.g. because admin-bot is not installed in the team). Nothing changes in Teams until an admin approves. A named entrypoint is reachable only through a binding, never over HTTP, so there is no secret to share.
+
 ### What you deploy vs. what's managed
 
 | Component | Who runs it | Role |
@@ -721,8 +744,10 @@ flowchart LR
 
 | File | Purpose |
 |---|---|
-| `src/index.js` | Worker entry — routes `/api/messages` and `/api/slack/interactions` |
+| `src/index.js` | Worker entry — routes `/api/messages` and `/api/slack/interactions`, exports `MembershipRequests` |
 | `src/teams.js` | Validates Bot Framework JWT, parses @admin-bot messages, replies in Teams |
+| `src/requests.js` | Submits requests (membership check, D1 row, approval card), for mentions and the service binding alike |
+| `src/rpc.js`, `src/membership.js` | The `MembershipRequests` service-binding entrypoint for other Workers |
 | `src/slack.js` | Posts approval cards, handles Approve/Reject buttons and modals |
 | `src/graph.js` | Graph API via fetch — token acquisition, resolve users, add members |
 | `src/parser.js` | Extracts email addresses from natural-language messages |

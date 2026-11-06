@@ -5,18 +5,18 @@
 
 export async function createRequest(db, {
   requesterName, requesterAadId, requesterEmail, teamId, teamName, teamsChannelId,
-  memberEmail, originalMessage, conversationId, serviceUrl, action,
+  memberEmail, originalMessage, conversationId, serviceUrl, action, via,
 }) {
   const { meta } = await db
     .prepare(
       `INSERT INTO requests
         (requester_name, requester_aad_id, requester_email, team_id, team_name, teams_channel_id,
-         member_email, original_message, conversation_id, service_url, action)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         member_email, original_message, conversation_id, service_url, action, via)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(requesterName, requesterAadId, requesterEmail ?? null, teamId, teamName, teamsChannelId ?? null,
           memberEmail, originalMessage ?? null,
-          conversationId ?? null, serviceUrl ?? null, action ?? 'add')
+          conversationId ?? null, serviceUrl ?? null, action ?? 'add', via ?? null)
     .run();
 
   return db.prepare('SELECT * FROM requests WHERE id = ?')

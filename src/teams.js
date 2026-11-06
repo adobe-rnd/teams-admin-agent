@@ -6,9 +6,8 @@
  */
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { extractEmails, hasAddIntent, hasRemoveIntent } from './parser.js';
-import { createRequest } from './db.js';
-import { postApprovalCard } from './slack.js';
-import { getTeamName, getRequesterEmail, getTeamMemberEmails } from './graph.js';
+import { submitRequests, replyText } from './requests.js';
+import { getTeamName, getRequesterEmail } from './graph.js';
 
 // JWKS endpoints — Bot Framework (multi-tenant) and Entra ID (single-tenant)
 const BF_JWKS = createRemoteJWKSet(
@@ -134,77 +133,14 @@ async function processMessage(activity, env) {
     const requesterEmail = await getRequesterEmail(env, requesterAadId);
     const cleanMsg = stripMentions(activity.text ?? '');
 
-    // Membership check (before creating requests). For add, skip people who
-    // are already members; for remove, skip people who aren't members.
-    let memberEmails;
-    try {
-      memberEmails = await getTeamMemberEmails(env, teamId);
-    } catch (err) {
-      console.error('getTeamMemberEmails failed:', err);
-      memberEmails = new Set();
-    }
-    const isRemove = action === 'remove';
-    const toProcess = [];
-    const skipped = [];
-    for (const email of emails) {
-      const isMember = memberEmails.has(email.toLowerCase().trim());
-      // remove → process members, skip non-members; add → the reverse.
-      if (isMember === isRemove) {
-        toProcess.push(email);
-      } else {
-        skipped.push(email);
-      }
-    }
-
-    const created = [];
-    const failed = [];
-
-    for (const email of toProcess) {
-      try {
-        const req = await createRequest(env.DB, {
-          requesterName, requesterAadId, requesterEmail, teamId, teamName, teamsChannelId: teamsTeamId,
-          memberEmail: email, originalMessage: cleanMsg,
-          conversationId: activity.conversation?.id,
-          serviceUrl: activity.serviceUrl,
-          action,
-        });
-        await postApprovalCard(env, req);
-        created.push(req);
-      } catch (err) {
-        console.error(`Request failed for ${email}:`, err);
-        failed.push({ email, error: err.message });
-      }
-    }
-
-    const lines = [];
-    if (skipped.length > 0) {
-      const one = skipped.length === 1;
-      const skippedText = isRemove
-        ? (one ? 'The following user is not a member of this team:' : 'The following users are not members of this team:')
-        : (one ? 'The following user is already a member of this team:' : 'The following users are already members of this team:');
-      lines.push(skippedText, '');
-      skipped.forEach((e, i) => {
-        lines.push(`• ${e}`);
-        if (i < skipped.length - 1) lines.push('');
-      });
-      if (created.length > 0 || failed.length > 0) lines.push('', '');
-    }
-    if (created.length) {
-      const n = created.length;
-      const requestWord = n === 1 ? 'request' : 'requests';
-      lines.push(`${isRemove ? 'Removal' : 'Invitation'} ${requestWord} submitted for approval:`, '');
-      created.forEach((r, i) => {
-        lines.push(`• ${r.member_email}`);
-        if (i < created.length - 1) lines.push('');
-      });
-      lines.push('', '', `You'll be notified here once the ${requestWord} ${n === 1 ? 'has' : 'have'} been reviewed.`);
-    }
-    if (failed.length) {
-      lines.push('', `**${failed.length} failed to submit:**`);
-      failed.forEach(f => lines.push(`- \`${f.email}\`: ${f.error}`));
-    }
-    if (lines.length > 0) {
-      await replyToTeams(activity, env, lines.join('\r\n'));
+    const result = await submitRequests(env, {
+      action, emails, teamId, teamName, teamsChannelId: teamsTeamId,
+      requesterName, requesterAadId, requesterEmail, originalMessage: cleanMsg,
+      conversationId: activity.conversation?.id, serviceUrl: activity.serviceUrl,
+    });
+    const reply = replyText(action, result);
+    if (reply) {
+      await replyToTeams(activity, env, reply);
     }
   } catch (err) {
     console.error('processMessage error:', err);
@@ -250,7 +186,7 @@ export async function replyToTeams(activity, env, text) {
   const token = await getBotToken(env);
   const base = (activity.serviceUrl ?? '').replace(/\/+$/, '');
   const convId = activity.conversation?.id;
-  if (!base || !convId) return;
+  if (!base || !convId) return false;
 
   const res = await fetch(`${base}/v3/conversations/${convId}/activities`, {
     method: 'POST',
@@ -269,6 +205,7 @@ export async function replyToTeams(activity, env, text) {
     const errBody = await res.text();
     console.error(`replyToTeams: ${res.status} ${errBody}`);
   }
+  return res.ok;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
