@@ -26,6 +26,8 @@ sequenceDiagram
 
 **How does Teams reach the Worker?** When you register an [Azure Bot](https://portal.azure.com/#create/Microsoft.AzureBot), you set a **messaging endpoint** URL — you point this at `https://teams-admin-agent.adobeaem.workers.dev/api/messages`. From then on, any time a user @mentions the bot in Teams, Azure Bot Service delivers the message as an HTTP POST to that URL. The Worker never polls — it just receives webhooks.
 
+Add/remove intent is detected only in the text after the bot's mention. Earlier discussion (such as "remove integration scripts") is ignored. Removal still takes precedence if both intents appear after the mention. Email addresses are extracted from the entire message as before.
+
 **How does the Worker post to Slack?** It calls the [Slack Web API](https://api.slack.com/methods/chat.postMessage) directly via `fetch`. No Slack SDK, no Socket Mode — just `POST https://slack.com/api/chat.postMessage` with the bot token and a JSON body containing the approval card blocks.
 
 ### Flow 2: Approving a request (Slack → Teams)
