@@ -5,7 +5,7 @@
  * records, posts Slack approval cards, and replies in Teams.
  */
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { extractEmails, hasAddIntent, hasRemoveIntent } from './parser.js';
+import { extractEmails, getCommandText, hasAddIntent, hasRemoveIntent } from './parser.js';
 import { submitRequests, replyText } from './requests.js';
 import { getTeamName, getRequesterEmail } from './graph.js';
 
@@ -99,9 +99,10 @@ async function processMessage(activity, env) {
     if (!teamsTeamId) return;
 
     const text = activity.text ?? '';
+    const command = getCommandText(text, activity.entities, activity.recipient?.id);
     // Remove intent wins when both appear, so a destructive request is never
     // silently downgraded to an add.
-    const action = hasRemoveIntent(text) ? 'remove' : hasAddIntent(text) ? 'add' : null;
+    const action = hasRemoveIntent(command) ? 'remove' : hasAddIntent(command) ? 'add' : null;
     if (!action) return;
 
     const emails = extractEmails(text);

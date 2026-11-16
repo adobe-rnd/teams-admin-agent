@@ -36,6 +36,20 @@ function stripMarkup(text) {
     .replace(TLD_GLUE_RE, '$1 ');
 }
 
+export function getCommandText(text, entities = [], botId) {
+  if (!text) return '';
+  const mention = botId && entities.find((e) => (
+    e.type === 'mention' && e.mentioned?.id === botId && e.text
+  ));
+  if (mention) {
+    const start = text.indexOf(mention.text);
+    return start < 0 ? '' : text.slice(start + mention.text.length);
+  }
+  const decoded = decodeEntities(text);
+  const match = /<at\b[^>]*>\s*admin-bot\s*<\/at>|@admin-bot(?=\s|[:,]|$)/i.exec(decoded);
+  return match ? decoded.slice(match.index + match[0].length) : '';
+}
+
 export function hasAddIntent(text) {
   if (!text) return false;
   return INTENT_WORDS.test(stripMarkup(text));

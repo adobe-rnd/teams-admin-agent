@@ -1,6 +1,60 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractEmails, hasAddIntent, hasRemoveIntent } from './parser.js';
+import { extractEmails, getCommandText, hasAddIntent, hasRemoveIntent } from './parser.js';
+
+test('getCommandText: ignores integration-script prose before the bot command', () => {
+  const text = `Hi Chamu,
+To add, change or remove integration scripts without a code deployment, use a tag manager.
+<at>admin-bot</at> add <a href="mailto:alice@example.com">alice@example.com</a>`;
+  const command = getCommandText(text);
+  assert.equal(hasAddIntent(command), true);
+  assert.equal(hasRemoveIntent(command), false);
+  assert.deepEqual(extractEmails(text), ['alice@example.com']);
+});
+
+test('getCommandText: supports HTML attributes, encoded markup, and plain-text mentions', () => {
+  for (const mention of [
+    '<at id="0">admin-bot</at>',
+    '&lt;at id="0"&gt;admin-bot&lt;/at&gt;',
+    '@admin-bot',
+    '@ADMIN-BOT:',
+  ]) {
+    const command = getCommandText(`remove scripts\n${mention} add alice@example.com`);
+    assert.equal(hasAddIntent(command), true);
+    assert.equal(hasRemoveIntent(command), false);
+  }
+});
+
+test('getCommandText: identifies the bot by recipient ID rather than another mention', () => {
+  const text = '<at>Chamu</at> remove scripts. <at>teams-admin-agent</at> add alice@example.com';
+  const entities = [
+    { type: 'mention', text: '<at>Chamu</at>', mentioned: { id: 'user-id' } },
+    { type: 'mention', text: '<at>teams-admin-agent</at>', mentioned: { id: 'bot-id' } },
+  ];
+  assert.equal(getCommandText(text, entities, 'bot-id'), ' add alice@example.com');
+});
+
+test('getCommandText: ignores intent before the mention but preserves intent after it', () => {
+  assert.equal(hasAddIntent(getCommandText('add scripts <at>admin-bot</at> remove alice@example.com')), false);
+  assert.equal(hasRemoveIntent(getCommandText('add scripts <at>admin-bot</at> remove alice@example.com')), true);
+  const command = getCommandText('<at>admin-bot</at> add or remove alice@example.com');
+  assert.equal(hasAddIntent(command), true);
+  assert.equal(hasRemoveIntent(command), true);
+});
+
+test('getCommandText: returns no command without the bot mention or trailing text', () => {
+  for (const text of [
+    '', null, undefined,
+    'add alice@example.com',
+    '<at>someone-else</at> remove alice@example.com',
+    '@admin-bot-other remove alice@example.com',
+    'remove alice@example.com <at>admin-bot</at>',
+  ]) {
+    const command = getCommandText(text);
+    assert.equal(hasAddIntent(command), false);
+    assert.equal(hasRemoveIntent(command), false);
+  }
+});
 
 // ── hasAddIntent ──────────────────────────────────────────────────
 
