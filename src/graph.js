@@ -142,6 +142,36 @@ export async function getRequesterEmail(env, aadObjectId) {
   }
 }
 
+/** A user's mail address: `mail`, else a UPN that is one (a guest's `…#EXT#@…` is not). */
+const addressOf = (u) => u.mail || (u.userPrincipalName && !u.userPrincipalName.includes('#EXT#')
+  ? u.userPrincipalName : null);
+
+/**
+ * The mail address of someone an @mention names (`{ aadObjectId, name }`, from
+ * src/mentions.js), or null. By their Entra object id when the mention has it; else by the name
+ * the mention shows, when exactly one user of the tenant has that display name, or failing that
+ * exactly one has a display name starting with it (a mention shortened to a first name). The
+ * request still waits for an admin's approval, whose card shows the address.
+ */
+export async function findMentionedEmail(env, { aadObjectId, name }) {
+  if (aadObjectId) {
+    const user = await graphApi(env, `/users/${encodeURIComponent(aadObjectId)}?$select=mail,userPrincipalName`)
+      .catch(() => null);
+    if (user) return addressOf(user);
+  }
+  const n = String(name || '').trim();
+  if (!n) return null;
+  const q = n.replace(/'/g, "''");
+  for (const filter of [`displayName eq '${q}'`, `startswith(displayName,'${q}')`]) {
+    // eslint-disable-next-line no-await-in-loop
+    const data = await graphApi(env, `/users?$filter=${encodeURIComponent(filter)}&$select=mail,userPrincipalName&$top=2`);
+    const users = (data?.value ?? []).filter(addressOf);
+    if (users.length === 1) return addressOf(users[0]);
+    if (users.length > 1) return null;
+  }
+  return null;
+}
+
 /**
  * Resolve user by email (UPN or mail). GET /users/{id} only accepts objectId or userPrincipalName;
  * if the address is in mail but not UPN (e.g. rofe@adobe.com), we fall back to $filter by mail.

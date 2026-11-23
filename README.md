@@ -748,6 +748,7 @@ flowchart LR
 |---|---|
 | `src/index.js` | Worker entry — routes `/api/messages` and `/api/slack/interactions`, exports `MembershipRequests` |
 | `src/teams.js` | Validates Bot Framework JWT, parses @admin-bot messages, replies in Teams |
+| `src/mentions.js` | People an @admin-bot command names by @mention, and their addresses |
 | `src/requests.js` | Submits requests (membership check, D1 row, approval card), for mentions and the service binding alike |
 | `src/rpc.js`, `src/membership.js` | The `MembershipRequests` service-binding entrypoint for other Workers |
 | `src/slack.js` | Posts approval cards, handles Approve/Reject buttons and modals |
@@ -776,6 +777,15 @@ Bot replies:
 > You'll be notified here once each is approved or rejected.
 
 Three separate cards appear in Slack `#teams-requests`, each with Approve / Reject buttons.
+
+People can be named by an @mention instead of their address (`@admin-bot add @Alice Example`).
+Teams completes a mention from the whole directory, so the person may not be in the team yet:
+admin-bot looks up their address in Graph (by their Entra id, or by a display name exactly one
+user has; `src/mentions.js`). When it finds none, or the message names nobody by address or
+mention, it says so instead of staying silent:
+
+> I couldn't find the email address of **Alice Example**, so I requested nothing for them.
+> Please write it out, for example `@admin-bot add name@example.com`.
 
 ## Troubleshooting
 
