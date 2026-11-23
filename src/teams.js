@@ -7,7 +7,8 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { extractEmails, getCommandText, hasAddIntent, hasRemoveIntent } from './parser.js';
 import { submitRequests, replyText } from './requests.js';
-import { getTeamName, getRequesterEmail } from './graph.js';
+import { getTeamName, getRequesterEmail, findMentionedEmail } from './graph.js';
+import { mentionedPeople, mentionEmails, noAddressText } from './mentions.js';
 
 // JWKS endpoints — Bot Framework (multi-tenant) and Entra ID (single-tenant)
 const BF_JWKS = createRemoteJWKSet(
@@ -105,10 +106,17 @@ async function processMessage(activity, env) {
     const action = hasRemoveIntent(command) ? 'remove' : hasAddIntent(command) ? 'add' : null;
     if (!action) return;
 
-    const emails = extractEmails(text);
+    // People can be named by an @mention, which Teams completes from the whole directory,
+    // instead of by their address: look theirs up, and say so when there is none.
+    const mentioned = mentionedPeople(text, activity.entities, activity.recipient?.id);
+    const fromMentions = await mentionEmails(env, mentioned, findMentionedEmail);
+    const emails = [...new Set([...extractEmails(text), ...fromMentions.emails])];
     console.log('Teams message text:', JSON.stringify(text));
-    console.log('Extracted emails:', emails);
-    if (emails.length === 0) return;
+    console.log('Extracted emails:', emails, 'unresolved mentions:', fromMentions.unresolved.length);
+    if (emails.length === 0) {
+      await replyToTeams(activity, env, noAddressText(action, fromMentions.unresolved));
+      return;
+    }
 
     // Resolve display name and Graph-compatible ID via Connector (team.id is thread-style, not Graph GUID)
     let teamName = activity.channelData?.team?.name ?? null;
@@ -139,7 +147,9 @@ async function processMessage(activity, env) {
       requesterName, requesterAadId, requesterEmail, originalMessage: cleanMsg,
       conversationId: activity.conversation?.id, serviceUrl: activity.serviceUrl,
     });
-    const reply = replyText(action, result);
+    const unresolved = fromMentions.unresolved.length
+      ? noAddressText(action, fromMentions.unresolved) : '';
+    const reply = [replyText(action, result), unresolved].filter(Boolean).join('\r\n\r\n');
     if (reply) {
       await replyToTeams(activity, env, reply);
     }
