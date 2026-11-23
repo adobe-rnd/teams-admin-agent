@@ -28,6 +28,8 @@ sequenceDiagram
 
 Add/remove intent is detected only in the text after the bot's mention. Earlier discussion (such as "remove integration scripts") is ignored. Removal still takes precedence if both intents appear after the mention. Email addresses are extracted from the entire message as before.
 
+Edited messages are handled too: Teams sends an edit as a `messageUpdate` activity, and the Worker treats it like a new message. This way a command fixed by editing it, for example when the @mention didn't resolve the first time, still gets an answer. An edit only files requests for emails that the same message hasn't already requested, so fixing a typo doesn't post a second approval card.
+
 **How does the Worker post to Slack?** It calls the [Slack Web API](https://api.slack.com/methods/chat.postMessage) directly via `fetch`. No Slack SDK, no Socket Mode — just `POST https://slack.com/api/chat.postMessage` with the bot token and a JSON body containing the approval card blocks.
 
 ### Flow 2: Approving a request (Slack → Teams)
