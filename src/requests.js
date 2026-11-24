@@ -20,7 +20,7 @@ import { getTeamMemberEmails } from './graph.js';
  */
 export async function submitRequests(env, {
   action, emails, teamId, teamName, teamsChannelId, requesterName, requesterAadId,
-  requesterEmail, originalMessage, conversationId, serviceUrl, via,
+  requesterEmail, originalMessage, conversationId, serviceUrl, via, teamsMessageId,
 }, { memberEmails = getTeamMemberEmails, approvalCard = postApprovalCard } = {}) {
   let members;
   try {
@@ -49,6 +49,7 @@ export async function submitRequests(env, {
       const req = await createRequest(env.DB, {
         requesterName, requesterAadId, requesterEmail, teamId, teamName, teamsChannelId,
         memberEmail: email, originalMessage, conversationId, serviceUrl, action, via,
+        teamsMessageId,
       });
       await approvalCard(env, req);
       created.push(req);

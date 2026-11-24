@@ -8,6 +8,7 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { extractEmails, getCommandText, hasAddIntent, hasRemoveIntent } from './parser.js';
 import { submitRequests, replyText } from './requests.js';
 import { getTeamName, getRequesterEmail } from './graph.js';
+import { getRequestedEmails } from './db.js';
 
 // JWKS endpoints — Bot Framework (multi-tenant) and Entra ID (single-tenant)
 const BF_JWKS = createRemoteJWKSet(
@@ -54,8 +55,8 @@ export async function handleTeamsActivity(request, env, ctx) {
 
   const activity = await request.json();
 
-  // We only care about messages; ack everything else with 200
-  if (activity.type !== 'message') {
+  // We only care about new and edited messages; ack everything else with 200
+  if (!isCommandActivity(activity)) {
     return new Response('', { status: 200 });
   }
 
@@ -65,6 +66,27 @@ export async function handleTeamsActivity(request, env, ctx) {
 }
 
 // ── Process an @admin-bot message ──────────────────────────────────
+
+/**
+ * A new message, or an edit of one. Teams delivers an edit as a `messageUpdate` with
+ * `eventType: 'editMessage'`, carrying the full new text and mentions. Without it, a command
+ * fixed by editing (a typo, or an @mention that did not resolve the first time) goes unanswered.
+ */
+export function isCommandActivity(activity) {
+  if (activity?.type === 'message') return true;
+  return activity?.type === 'messageUpdate' && activity.channelData?.eventType === 'editMessage';
+}
+
+/**
+ * The emails to file requests for. For an edit, drops those this message already has a
+ * request of this action for, so fixing a typo does not post a second approval card.
+ */
+export async function emailsToRequest(env, activity, action, emails, { requested = getRequestedEmails } = {}) {
+  const conversationId = activity.conversation?.id;
+  if (activity.type !== 'messageUpdate' || !activity.id || !conversationId) return emails;
+  const done = await requested(env.DB, { conversationId, teamsMessageId: activity.id, action });
+  return emails.filter((e) => !done.has(e.toLowerCase().trim()));
+}
 
 function looksLikeThreadId(s) {
   if (!s || typeof s !== 'string') return false;
@@ -105,8 +127,8 @@ async function processMessage(activity, env) {
     const action = hasRemoveIntent(command) ? 'remove' : hasAddIntent(command) ? 'add' : null;
     if (!action) return;
 
-    const emails = extractEmails(text);
-    console.log('Teams message text:', JSON.stringify(text));
+    const emails = await emailsToRequest(env, activity, action, extractEmails(text));
+    console.log(`Teams ${activity.type} text:`, JSON.stringify(text));
     console.log('Extracted emails:', emails);
     if (emails.length === 0) return;
 
@@ -138,6 +160,7 @@ async function processMessage(activity, env) {
       action, emails, teamId, teamName, teamsChannelId: teamsTeamId,
       requesterName, requesterAadId, requesterEmail, originalMessage: cleanMsg,
       conversationId: activity.conversation?.id, serviceUrl: activity.serviceUrl,
+      teamsMessageId: activity.id,
     });
     const reply = replyText(action, result);
     if (reply) {
